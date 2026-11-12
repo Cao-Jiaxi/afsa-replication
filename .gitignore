@@ -1,0 +1,41 @@
+# ---- WRDS licence: CRSP/Compustat data and anything derived from it must never be committed ----
+Ander/
+Data/
+data/
+results/
+runs/
+*.parquet
+*.csv
+*.csv.gz
+*.feather
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+*.zip
+*.sas7bdat
+*.dta
+
+# Copyrighted papers and course material
+*.pdf
+
+# Python / environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+
+# Editors / OS
+.vscode/
+.idea/
+.claude/
+Thumbs.db
+desktop.ini
