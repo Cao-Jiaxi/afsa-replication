@@ -13,6 +13,7 @@ import math
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.autograd.function import once_differentiable
 
 from .config import N_CHAR, N_LEVEL, Config
 from .panel import Batch
@@ -33,7 +34,7 @@ def init_member(cfg: Config, seed: int) -> dict[str, torch.Tensor]:
     def uniform(shape, fan_in):                      # default of nn.Linear: U(-1/sqrt(fan_in), 1/sqrt(fan_in))
         return (torch.rand(shape, generator=g) * 2 - 1) / math.sqrt(fan_in)
 
-    W = uniform((N_CHAR + N_LEVEL, dx), N_CHAR + N_LEVEL)                    # W^K, 79 x d_x
+    W = uniform((N_CHAR + N_LEVEL, dx), N_CHAR + N_LEVEL) * cfg.w_init_scale  # W^K, 79 x d_x
     p = {
         "W_rank": W[:N_CHAR].clone(),                                        # rows of the 39 ranks
         "W_level": W[N_CHAR:].clone(),                                       # rows of the 39 medians and rf
@@ -54,6 +55,27 @@ def init_member(cfg: Config, seed: int) -> dict[str, torch.Tensor]:
     p["head_w"] = uniform((d,), d)
     p["head_b"] = uniform((), d)
     return p
+
+
+class _SpdSolve(torch.autograd.Function):
+    """X = G^-1 B for a symmetric positive definite G whose Cholesky factor is given.
+
+    The gradient uses dX = G^-1 (dB - dG X) directly. Differentiating through the factorization gives the same
+    numbers but costs several K x K x K products per day, which dominates the training time for large K.
+    """
+
+    @staticmethod
+    def forward(ctx, G, chol, B):
+        X = torch.cholesky_solve(B, chol)
+        ctx.save_for_backward(chol, X)
+        return X
+
+    @staticmethod
+    @once_differentiable
+    def backward(ctx, grad_X):
+        chol, X = ctx.saved_tensors
+        grad_B = torch.cholesky_solve(grad_X, chol)
+        return -torch.matmul(grad_B, X.transpose(-1, -2)), None, grad_B
 
 
 def explained_variance(eps: torch.Tensor, R: torch.Tensor, member: torch.Tensor, min_days: int) -> torch.Tensor:
@@ -135,82 +157,89 @@ class AFSAModel(nn.Module):
             scores = scores + torch.bmm(lev, torch.bmm(self.W_level * self.level_mask[:, None], Qt))[:, :, None, :]
         return torch.softmax(scores.masked_fill(~b.member[..., None], float("-inf")), dim=2)
 
-    def gram_factor(self, wF: torch.Tensor) -> torch.Tensor:
-        """Cholesky factor of omega^F omega^F' + ridge I. [M, T, K, K]"""
+    def gram(self, wF: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """omega^F omega^F' + ridge I and its Cholesky factor. [M, T, K, K] each."""
         G = torch.matmul(wF.transpose(2, 3), wF).to(self.solve_dtype)
         G = G + self.cfg.ridge * torch.eye(G.shape[-1], device=G.device, dtype=G.dtype)
-        return torch.linalg.cholesky_ex(G).L
+        return G, torch.linalg.cholesky_ex(G.detach()).L
 
     @staticmethod
-    def project(wF: torch.Tensor, chol: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    def project(wF: torch.Tensor, gram: tuple[torch.Tensor, torch.Tensor], v: torch.Tensor) -> torch.Tensor:
         """omega^eps v = v - beta' (omega^F v), with beta' = omega^F' (omega^F omega^F' + ridge I)^-1.
 
         omega^eps is symmetric, so the same map gives the residuals (v = R) and the asset weights (v = omega^port).
         v: [M, T, U]. The N x N matrix is never built.
         """
-        Fv = torch.matmul(wF.transpose(2, 3), v.unsqueeze(-1))                                 # factor exposure [M, T, K, 1]
-        coef = torch.cholesky_solve(Fv.to(chol.dtype), chol).to(v.dtype)
+        G, chol = gram
+        Fv = torch.matmul(v.unsqueeze(-2), wF).transpose(-1, -2)                               # factor exposure [M, T, K, 1]
+        coef = _SpdSolve.apply(G, chol, Fv.to(chol.dtype)).to(v.dtype)
         return v - torch.matmul(wF, coef).squeeze(-1)
 
     def loadings(self, wF: torch.Tensor) -> torch.Tensor:
         """beta' = omega^F' (omega^F omega^F' + ridge I)^-1: loading of each stock on each factor. [M, T, U, K]"""
-        chol = self.gram_factor(wF)
+        chol = self.gram(wF)[1]
         return torch.cholesky_solve(wF.transpose(2, 3).to(chol.dtype), chol).transpose(2, 3).to(wF.dtype)
 
     # ------------------------------------------------------------------ sequence model (section 3.3, Appendix A)
-    def _p(self, name: str, like: torch.Tensor) -> torch.Tensor:
-        """Parameter [M, ...] reshaped to broadcast against `like` = [M, ..., d]."""
-        p = getattr(self, name)
-        return p.reshape(p.shape[0], *([1] * (like.dim() - p.dim())), *p.shape[1:])
-
-    def _dropout(self, z: torch.Tensor, train: bool, gens, n_cols: list[int]) -> torch.Tensor:
-        p = self.cfg.dropout
-        if not train or p == 0:
-            return z
+    def _keep(self, shape: tuple[int, ...], like: torch.Tensor, gens, n_cols: list[int] | None) -> torch.Tensor:
+        """Dropout mask for activations of `shape` = [M, T, U, ..., d], divided by the keep probability. [M, n, d]"""
+        q = 1 - self.cfg.dropout
         if gens is None:
-            keep = torch.rand_like(z) >= p
+            keep = torch.empty(shape, device=like.device, dtype=like.dtype).bernoulli_(q)
         else:           # one stream per model, sized by that model's own columns: independent of the rest of the batch
-            keep = torch.zeros(z.shape, dtype=torch.bool, device=z.device)
+            keep = torch.zeros(shape, device=like.device, dtype=like.dtype)
             for m, g in enumerate(gens):
-                keep[m, :, :n_cols[m]] = torch.rand((z.shape[1], n_cols[m], *z.shape[3:]), generator=g, device=z.device, dtype=z.dtype) >= p
-        return z * keep / (1 - p)
+                own = torch.empty((shape[1], n_cols[m], *shape[3:]), device=like.device, dtype=like.dtype)
+                keep[m, :, :n_cols[m]] = own.bernoulli_(q, generator=g)
+        return keep.mul_(1 / q).flatten(1, -2)
 
-    def _block(self, l: int, u: torch.Tensor, conv: torch.Tensor, train: bool, gens, n_cols) -> torch.Tensor:
-        """GELU, dropout, linear layer, residual connection and LayerNorm around the convolution output."""
-        z = self._dropout(F.gelu(conv), train, gens, n_cols)
-        z = torch.matmul(z, self._p(f"lin_w{l}", z).transpose(-1, -2)) + self._p(f"lin_b{l}", z)
+    def _block(self, l: int, u: torch.Tensor, conv: torch.Tensor, keep: torch.Tensor | None) -> torch.Tensor:
+        """GELU, dropout, linear layer, residual connection and LayerNorm around a convolution output. [M, n, d]"""
+        z = F.gelu(conv)
+        if keep is not None:
+            z = z * keep
+        z = torch.baddbmm(getattr(self, f"lin_b{l}")[:, None, :], z, getattr(self, f"lin_w{l}").transpose(1, 2))
         h = F.layer_norm(u + z, (u.shape[-1],))
-        return h * self._p(f"norm_g{l}", h) + self._p(f"norm_b{l}", h)
+        return torch.addcmul(getattr(self, f"norm_b{l}")[:, None, :], h, getattr(self, f"norm_g{l}")[:, None, :])
 
     def signal(self, x: torch.Tensor, train: bool = False, gens=None, n_cols: list[int] | None = None) -> torch.Tensor:
         """omega^port = LongConv(lagged residuals). x: [M, T, U, L], oldest lag first. Returns [M, T, U].
 
-        y = K * u + D u along time (causal: y[i] = sum_j u[j] K[i - j]). Only the newest position of the last
-        layer is read out, so that position is computed directly instead of the whole sequence by FFT; both give
-        the same number (tests/test_model.py).
+        Each lagged residual is embedded as u[l, h] = in_w[h] x[l] + in_b[h]; a block computes y = K * u + D u
+        along time (causal: y[i] = sum_j u[j] K[i - j]) followed by GELU, dropout, a linear layer, a residual
+        connection and LayerNorm; the newest position of the last block is read out by a linear layer.
+        Only that position is needed from the last block, so it is computed directly rather than as a whole
+        sequence by FFT; both give the same number (tests/test_model.py).
         """
         cfg = self.cfg
-        last = cfg.n_layers - 1
+        M, T, U, L = x.shape
+        d, last = cfg.d_model, cfg.n_layers - 1
+        drop = train and cfg.dropout > 0
+        w, b = self.in_w, self.in_b
+        xf = x.reshape(M, T * U, L)
+        k = squash(getattr(self, f"kernel{last}"), cfg.squash)                                 # [M, d, L]; lag 0 = newest
         if cfg.n_layers == 1:
-            # u[l, h] = in_w[h] x[l] + in_b[h] is linear in x, so (K * u)[newest] needs no [.., L, d] tensor.
-            k = squash(self.kernel0, cfg.squash)                                               # [M, d, L]; lag 0 = newest
-            xk = torch.matmul(x, k.flip(-1).transpose(1, 2)[:, None])                          # sum_l x[l] K[h, L-1-l]
-            u_last = x[..., -1:] * self._p("in_w", xk) + self._p("in_b", xk)                   # [M, T, U, d]
-            conv = xk * self._p("in_w", xk) + (self.in_b * k.sum(-1))[:, None, None, :] + self._p("skip0", xk) * u_last
+            # The newest output is linear in the L lagged residuals, so the embedding, the convolution and the
+            # skip term collapse into one L x d matrix E and no [.., L, d] tensor is ever built:
+            #   sum_lag K[h, lag] u[L-1-lag, h] + D[h] u[L-1, h] = sum_l x[l] E[l, h] + c[h]
+            E = k.flip(-1) * w[:, :, None]                                                     # [M, d, L]
+            E = E + F.pad((self.skip0 * w)[:, :, None], (L - 1, 0))                            # D acts on the newest lag
+            c = b * (k.sum(-1) + self.skip0)
+            conv = torch.baddbmm(c[:, None, :], xf, E.transpose(1, 2))                         # [M, T*U, d]
+            u_last = torch.addcmul(b[:, None, :], xf[:, :, -1:], w[:, None, :])
         else:
-            u = x.unsqueeze(-1) * self._p("in_w", x[..., None]) + self._p("in_b", x[..., None])   # [M, T, U, L, d]
-            L = x.shape[-1]
+            u = torch.addcmul(b[:, None, None, :], xf[..., None], w[:, None, None, :])         # [M, T*U, L, d]
             lag = torch.arange(L, device=x.device)[:, None] - torch.arange(L, device=x.device)[None, :]   # i - j
-            for l in range(last):                                                              # full sequences
-                k = squash(getattr(self, f"kernel{l}"), cfg.squash)
-                causal = k[:, :, lag.clamp_min(0)] * (lag >= 0)                                # [M, d, L, L]
-                conv = torch.einsum("mtujh,mhij->mtuih", u, causal) + self._p(f"skip{l}", u) * u
-                u = self._block(l, u, conv, train, gens, n_cols)
-            k = squash(getattr(self, f"kernel{last}"), cfg.squash)
-            u_last = u[..., -1, :]
-            conv = torch.einsum("mtulh,mhl->mtuh", u, k.flip(-1)) + self._p(f"skip{last}", u_last) * u_last
-        h = self._block(last, u_last, conv, train, gens, n_cols)
-        return (h * self._p("head_w", h)).sum(-1) + self.head_b[:, None, None]
+            for l in range(last):                                                              # whole sequences
+                kl = squash(getattr(self, f"kernel{l}"), cfg.squash)
+                causal = kl[:, :, lag.clamp_min(0)] * (lag >= 0)                               # [M, d, L, L]: K[h, i-j], j <= i
+                conv = torch.einsum("mnjh,mhij->mnih", u, causal) + getattr(self, f"skip{l}")[:, None, None, :] * u
+                keep = self._keep((M, T, U, L, d), x, gens, n_cols) if drop else None
+                u = self._block(l, u.reshape(M, -1, d), conv.reshape(M, -1, d), keep).view(M, T * U, L, d)
+            u_last = u[:, :, -1, :]
+            conv = torch.einsum("mnlh,mhl->mnh", u, k.flip(-1)) + getattr(self, f"skip{last}")[:, None, :] * u_last
+        h = self._block(last, u_last, conv, self._keep((M, T, U, d), x, gens, n_cols) if drop else None)
+        return torch.baddbmm(self.head_b[:, None, None], h, self.head_w[:, :, None]).view(M, T, U)
 
     # ------------------------------------------------------------------ the whole model
     def forward(self, b: Batch, train: bool = False, gens=None) -> dict[str, torch.Tensor]:
@@ -221,13 +250,15 @@ class AFSAModel(nn.Module):
         """
         cfg, L = self.cfg, self.cfg.lookback
         wF = self.factor_weights(b)
-        chol = self.gram_factor(wF)
-        eps = self.project(wF, chol, b.R)                                                      # residuals; 0 outside the universe
+        G, chol = self.gram(wF)
+        eps = self.project(wF, (G, chol), b.R)                                                 # residuals; 0 outside the universe
         T = eps.shape[1]
         x = eps.unfold(1, L, 1)[:, : T - L] * cfg.resid_scale                                  # [M, T-L, U, L]: rows t-L..t-1 for row t
+        if cfg.cumulative:
+            x = x.cumsum(-1)                                                                   # residual price path over the lookback
         n_cols = b.n_cols.tolist() if (train and gens is not None and cfg.dropout > 0) else None
         w_port = self.signal(x, train, gens, n_cols) * b.valid[:, L:]                          # no signal without L prior days
-        w = self.project(wF[:, L:], chol[:, L:], w_port)                                       # (omega^eps)' omega^port
+        w = self.project(wF[:, L:], (G[:, L:], chol[:, L:]), w_port)                           # (omega^eps)' omega^port
         w = w / w.abs().sum(-1, keepdim=True).clamp_min(1e-12)                                 # ||omega||_1 = 1
         return {
             "wF": wF, "eps": eps, "w_port": w_port, "w": w,
@@ -235,12 +266,17 @@ class AFSAModel(nn.Module):
             "turnover": (w[:, 1:] - w[:, :-1]).abs().sum(-1),
             "short": torch.relu(-w[:, 1:]).sum(-1),
             "ev": explained_variance(eps[:, L + 1:], b.R[:, L + 1:], b.member[:, L + 1:], cfg.ev_min_days),
+            # R is in excess of rf stock by stock, so "ret" already charges rf on the net position sum(w). The
+            # paper's formula charges it on one whole unit: the difference is rf * (1 - sum(w)).
+            "rf_drag": b.rf[:, L + 1:] * (1 - w[:, 1:].sum(-1)),
         }
 
     def objective(self, out: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Net Sharpe ratio + lambda_var * explained variance, per model ([M]); to be maximised."""
+        """Net Sharpe ratio + lambda_var * explained variance, per model ([M]); to be maximized."""
         cfg = self.cfg
         net = out["ret"] - cfg.cost_trade * out["turnover"] - cfg.cost_short * out["short"]
+        if cfg.rf_hurdle:
+            net = net - out["rf_drag"]
         scale = math.sqrt(cfg.sharpe_days)
         sharpe = net.mean(1) / net.std(1, correction=0).clamp_min(1e-12) * scale
         parts = {

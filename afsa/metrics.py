@@ -7,9 +7,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .config import TRADING_DAYS, TRAIN_DATA_DIR, Config
+from .config import TRADING_DAYS, TRAIN_DATA_DIR, WINDOW_RULES, Config, data_folder
 
-# Attention Factors rows of Table 2 (out-of-sample 1998-2021, annualised, mu and sigma in %).
+# Attention Factors rows of Table 2 (out-of-sample 1998-2021, annualized, mu and sigma in %).
 METRICS = ("SR", "mu", "sigma", "SR_net", "mu_net", "sigma_net", "beta")
 PAPER_TABLE2 = {
     1: (3.05, 14.45, 4.74, 1.68, 7.94, 4.72, 0.05),
@@ -22,12 +22,24 @@ PAPER_TABLE2 = {
 }
 
 
-def market_returns(universe: str = "broad") -> pd.Series:
-    """Equal-weighted excess return of the universe, by day (the paper's market row)."""
-    folder = TRAIN_DATA_DIR / universe
-    member = np.load(folder / "permno.npy") >= 0
-    ex = np.where(member, np.load(folder / "ret.npy") - np.load(folder / "rf.npy")[:, None], 0.0)
-    return pd.Series(ex.sum(1) / member.sum(1), index=pd.DatetimeIndex(np.load(folder / "dates.npy")), name="market")
+def market_returns(universe: str = "broad", train_years: int = 8, fill: str = "last") -> pd.Series:
+    """Equal-weighted excess return of the universe, by day (the paper's market row), from the arrays the run trained
+    on (config.data_folder: the `wrds_*` universes exist only with a fill suffix).
+
+    For a universe that is fixed per training window, each test year contributes the days of its own list."""
+    def one(folder: Path) -> pd.Series:
+        member = np.load(folder / "permno.npy") >= 0
+        ex = np.where(member, np.load(folder / "ret.npy") - np.load(folder / "rf.npy")[:, None], 0.0)
+        return pd.Series(ex.sum(1) / np.maximum(member.sum(1), 1), index=pd.DatetimeIndex(np.load(folder / "dates.npy")), name="market")
+
+    root = TRAIN_DATA_DIR / data_folder(universe, fill)
+    if universe not in WINDOW_RULES:
+        return one(root)
+    parts = []
+    for folder in sorted((root / f"{train_years}y").glob("[0-9][0-9][0-9][0-9]")):
+        s = one(folder)
+        parts.append(s[s.index.year == int(folder.name)])
+    return pd.concat(parts).rename("market")
 
 
 def stitch(seed_dir: Path, cfg: Config) -> pd.DataFrame:
@@ -57,7 +69,7 @@ def stitch(seed_dir: Path, cfg: Config) -> pd.DataFrame:
 
 
 def performance(daily: pd.DataFrame, market: pd.Series | None = None) -> dict[str, float]:
-    """Annualised Sharpe ratio, mean and volatility (in %), gross and net of costs, beta and trading statistics."""
+    """Annualized Sharpe ratio, mean and volatility (in %), gross and net of costs, beta and trading statistics."""
     k, out = TRADING_DAYS, {}
     for label, r in (("", daily["gross"]), ("_net", daily["net"])):
         out["SR" + label] = r.mean() / r.std() * np.sqrt(k)
@@ -77,7 +89,7 @@ def summarize(run_dir: Path, first_year: int | None = None, last_year: int | Non
     """One row per seed, their mean and (for the Sharpe ratios) their standard deviation across seeds."""
     run_dir = Path(run_dir)
     cfg = Config.load(run_dir / "config.json")
-    market = market_returns(cfg.universe)
+    market = market_returns(cfg.universe, cfg.train_years, cfg.fill)
     rows = {}
     for seed_dir in sorted(run_dir.glob("seed*"), key=lambda p: int(p.name[4:])):
         daily = stitch(seed_dir, cfg)

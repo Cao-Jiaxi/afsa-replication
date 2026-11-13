@@ -12,9 +12,22 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from .config import TRAIN_DATA_DIR
+from .config import TRAIN_DATA_DIR, WINDOW_RULES
 
 ARRAYS = ("dates", "permnos", "permno", "slot_of", "ranks", "levels", "ret", "rf", "run")
+
+
+def build_command(folder: str) -> str:
+    """The command that writes Data/TrainingData/<folder>, for the message of a missing folder. A `wrds_*` folder
+    comes from afsa.build_wrds, whose default fill is none (config.data_folder: no suffix = fill last)."""
+    name = folder.replace("\\", "/").split("/")[0]                      # window folders are <rule>[_fill-x]/<n>y/<year>
+    universe, _, fill = name.partition("_fill-")
+    if universe.startswith("wrds_"):
+        return f"python -m afsa.build_wrds --universe {universe}" + ("" if fill == "none" else f" --fill {fill or 'last'}")
+    extra = f" --fill {fill}" if fill else ""
+    if universe in WINDOW_RULES:
+        return f"python -m afsa.build_window --rule {universe}{extra}"
+    return f"python -m afsa.build_data --universe {universe}{extra}"
 
 
 def membership(permno: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -48,6 +61,7 @@ class Batch:
     member: torch.Tensor   # [M, T, U]     in the universe that day
     valid: torch.Tensor    # [M, T, U]     member, and in the universe on each of the `lookback` days before
     levels: torch.Tensor   # [M, T, 40]    39 raw medians and rf of the previous day
+    rf: torch.Tensor       # [M, T]        risk-free rate of the day (already subtracted from R)
     cols: torch.Tensor     # [M, U]        stock id of each column (index into Panel.permnos)
     n_cols: torch.Tensor   # [M]           real columns of each model; the remaining ones are padding
 
@@ -60,7 +74,7 @@ class Panel:
                  dtype: torch.dtype = torch.float32):
         folder = TRAIN_DATA_DIR / universe
         if not (folder / "meta.json").exists():
-            raise FileNotFoundError(f"{folder} has no training arrays: run `python -m afsa.build_data --universe {universe}` first")
+            raise FileNotFoundError(f"{folder} has no training arrays: run `{build_command(universe)}` first")
         self.meta = json.loads((folder / "meta.json").read_text())
         self.universe = universe
         dates = np.load(folder / "dates.npy")
@@ -100,6 +114,7 @@ class Panel:
         self.ranks = torch.as_tensor(a["ranks"], dtype=dtype, device=self.device)        # [T, N, 39]
         self.levels = torch.as_tensor(a["levels"], dtype=dtype, device=self.device)      # [T, 40]
         self.exret = torch.as_tensor(exret, dtype=dtype, device=self.device)             # [T, N]
+        self.rf = torch.as_tensor(a["rf"], dtype=dtype, device=self.device)              # [T]
         self.run = torch.as_tensor(a["run"], device=self.device)                         # [T, N] int16
         self.slot_of = torch.as_tensor(a["slot_of"], device=self.device)                 # [T, S] int16
         self.n_slots = self.ranks.shape[1]
@@ -133,6 +148,7 @@ class Panel:
             member=member,
             valid=member & (self.run[day, slot] > lookback),
             levels=self.levels[d],
+            rf=self.rf[d],
             cols=cols,
             n_cols=n_cols,
         )

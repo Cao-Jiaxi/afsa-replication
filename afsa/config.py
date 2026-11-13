@@ -15,12 +15,29 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIR = ROOT / "Ander" / "data"            # Ander's processed parquet files (read-only input)
 TRAIN_DATA_DIR = ROOT / "Data" / "TrainingData"  # model-ready arrays, written by afsa.build_data
 RESULTS_DIR = ROOT / "results"
+WRDS_DIR = ROOT / "Data" / "WRDS"                # our own WRDS downloads (raw\) and what we build from them
 
 # Universe name -> (X file, membership flag in crsp_daily)
 UNIVERSES = {
     "broad": ("X_amplio.parquet", "in_universe"),          # main: top 500 of all NYSE/AMEX/NASDAQ equities
     "common": ("X_comun.parquet", "in_universe_comun"),    # robustness: US common stocks only
 }
+# Universes fixed within each training window, written by afsa.build_window (one folder per test year):
+# "window" needs returns on every day of the training years and of the test year, "window_train" of the training years.
+WINDOW_RULES = ("window", "window_train")
+# The same monthly top-500 lists with every input rebuilt from our own WRDS downloads, written by afsa.build_wrds
+# (the arrays start on 1989-11-01, so the loss days of the first window start on 1990-01-02).
+WRDS_UNIVERSES = ("wrds_broad", "wrds_common")
+# Missing characteristics before ranking: "last" carries the stock's last observed value forward (the paper's section
+# 4.1, Ander's X); "none" leaves them missing. Either way a stock still without a value gets rank 0 (the median) and
+# the others are ranked among themselves.
+FILLS = ("last", "none")
+
+
+def data_folder(universe: str, fill: str = "last") -> str:
+    """Folder under TRAIN_DATA_DIR of a universe's arrays: `broad` holds Ander's X as is, `broad_fill-none` the rebuild,
+    `wrds_broad_fill-none` the arrays built from our WRDS downloads under the missing-value policy."""
+    return universe if fill == "last" else f"{universe}_fill-{fill}"
 
 # The 39 characteristics of Table 1, in the column order of X. Table 3 drops one group at a time.
 CHAR_GROUPS: dict[str, tuple[str, ...]] = {
@@ -46,7 +63,7 @@ def _f(default, help):  # dataclass field with a help string for the CLI
 @dataclass(frozen=True)
 class Config:
     # ---- data and protocol -------------------------------------------------------------------
-    universe: str = _f("broad", "universe: broad (main) or common (US common stocks only)")
+    universe: str = _f("broad", "universe: broad (monthly top 500, main), common (US common stocks only), window / window_train (500 fixed per training window), or wrds_broad / wrds_common (rebuilt from WRDS by afsa.build_wrds)")
     train_years: int = _f(8, "length of the rolling training window, in calendar years")
     lookback: int = _f(30, "number of lagged daily residuals fed to the sequence model")
     # ---- attention factors -------------------------------------------------------------------
@@ -54,37 +71,51 @@ class Config:
     d_x: int = _f(32, "dimension of the characteristic embedding and of the queries")
     ridge: float = _f(1e-5, "ridge penalty in the factor loadings")
     q_init_std: float = _f(1.0, "standard deviation of the initial query matrix Q")
+    w_init_scale: float = _f(1.0, "multiplies the initial embedding matrix W^K (1 = the default of nn.Linear)")
     use_levels: bool = _f(True, "feed the 39 medians and rf (inert under eq. 1: the softmax over stocks cancels them)")
+    fill: str = _f("last", "missing characteristics before ranking: last (the stock's last observed value, paper section 4.1) or none (left at rank 0)")
     drop_groups: tuple[str, ...] = _f((), "characteristic groups removed from the input (Table 3): " + ", ".join(CHAR_GROUPS))
+    drop_chars: tuple[str, ...] = _f((), "single characteristics removed from the input, by their name in Table 1")
     # ---- LongConv sequence model --------------------------------------------------------------
     d_model: int = _f(32, "hidden dimension = number of convolutions")
     n_layers: int = _f(1, "number of LongConv blocks")
     dropout: float = _f(0.1, "dropout inside each LongConv block")
     squash: float = _f(1e-3, "strength of the Squash (soft-threshold) operator on the kernel")
-    kernel_init_std: float = _f(1.0, "scale of the random draw in the geometric-decay kernel initialisation")
+    kernel_init_std: float = _f(1.0, "scale of the random draw in the geometric-decay kernel initialization")
     resid_scale: float = _f(100.0, "the residuals enter the sequence model multiplied by this (100 = per cent)")
+    cumulative: bool = _f(False, "feed the running sum of the lagged residuals (a residual price path) instead of the residuals")
     # ---- objective ----------------------------------------------------------------------------
     lambda_var: float = _f(100.0, "weight of the explained-variance term")
-    sharpe_days: float = _f(252.0, "the Sharpe term is scaled by sqrt(sharpe_days): 252 = annualised, 1 = daily")
+    sharpe_days: float = _f(252.0, "the Sharpe term is scaled by sqrt(sharpe_days): 252 = annualized, 1 = daily")
+    rf_hurdle: bool = _f(False, "Sharpe term on raw returns minus the risk-free rate, as the paper prints it (default: stock-by-stock excess returns)")
     cost_trade: float = _f(5e-4, "cost per unit of turnover")
     cost_short: float = _f(1e-4, "cost per unit of short exposure per day")
     ev_min_days: int = _f(21, "a stock enters the explained-variance term if it is in the universe on at least this many days of the batch")
-    # ---- optimisation -------------------------------------------------------------------------
+    # ---- optimization -------------------------------------------------------------------------
     epochs: int = _f(30, "passes over the training window")
     batch_days: int = _f(126, "consecutive trading days per batch")
     lr: float = _f(3e-3, "AdamW learning rate")
+    lr_schedule: str = _f("constant", "learning-rate schedule over the whole training: constant, or cosine (decays to zero)")
     weight_decay: float = _f(0.05, "AdamW weight decay, applied to the sequence model only")
     solve_dtype: str = _f("float64", "precision of the K x K ridge solve: float64 or float32")
 
     def __post_init__(self):
         object.__setattr__(self, "drop_groups", tuple(self.drop_groups))
+        object.__setattr__(self, "drop_chars", tuple(self.drop_chars))
         unknown = set(self.drop_groups) - set(CHAR_GROUPS)
         if unknown:
             raise ValueError(f"unknown characteristic groups {sorted(unknown)}; choose from {list(CHAR_GROUPS)}")
-        if self.universe not in UNIVERSES:
-            raise ValueError(f"unknown universe {self.universe!r}; choose from {list(UNIVERSES)}")
+        unknown = set(self.drop_chars) - set(CHARACTERISTICS)
+        if unknown:
+            raise ValueError(f"unknown characteristics {sorted(unknown)}; choose from {list(CHARACTERISTICS)}")
+        if self.universe not in UNIVERSES and self.universe not in WINDOW_RULES and self.universe not in WRDS_UNIVERSES:
+            raise ValueError(f"unknown universe {self.universe!r}; choose from {list(UNIVERSES) + list(WINDOW_RULES) + list(WRDS_UNIVERSES)}")
+        if self.fill not in FILLS:
+            raise ValueError(f"unknown fill rule {self.fill!r}; choose from {list(FILLS)}")
         if self.solve_dtype not in ("float64", "float32"):
             raise ValueError("solve_dtype must be float64 or float32")
+        if self.lr_schedule not in ("constant", "cosine"):
+            raise ValueError("lr_schedule must be constant or cosine")
         if min(self.K, self.d_x, self.d_model, self.n_layers, self.lookback, self.batch_days, self.epochs) < 1:
             raise ValueError("K, d_x, d_model, n_layers, lookback, batch_days and epochs must be at least 1")
 
@@ -97,7 +128,7 @@ class Config:
     @property
     def char_mask(self) -> list[bool]:
         """True for the characteristics kept in the input."""
-        dropped = {c for g in self.drop_groups for c in CHAR_GROUPS[g]}
+        dropped = {c for g in self.drop_groups for c in CHAR_GROUPS[g]} | set(self.drop_chars)
         return [c not in dropped for c in CHARACTERISTICS]
 
     def name(self) -> str:
@@ -109,14 +140,16 @@ class Config:
                 continue
             if f.name == "drop_groups":
                 parts.append("drop-" + "+".join(v))
+            elif f.name == "drop_chars":
+                parts.append("dropchar-" + "+".join(v))
             else:
                 parts.append(f"{f.name}-{v}")
         return "_".join(parts)
 
-    # ---- (de)serialisation ----------------------------------------------------------------------
+    # ---- (de)serialization ----------------------------------------------------------------------
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
-        d["drop_groups"] = list(self.drop_groups)
+        d["drop_groups"], d["drop_chars"] = list(self.drop_groups), list(self.drop_chars)
         return d
 
     @classmethod
@@ -142,6 +175,8 @@ class Config:
             help_ = f"{f.metadata['help']} [default: {f.default}]"
             if f.name == "drop_groups":
                 group.add_argument("--drop_groups", "--drop-groups", nargs="*", default=None, choices=list(CHAR_GROUPS), help=help_)
+            elif f.name == "drop_chars":
+                group.add_argument("--drop_chars", "--drop-chars", nargs="*", default=None, choices=list(CHARACTERISTICS), metavar="NAME", help=help_)
             elif isinstance(f.default, bool):
                 group.add_argument(f"--{f.name}", type=lambda s: s.lower() in ("1", "true", "yes"), default=None, metavar="BOOL", help=help_)
             else:

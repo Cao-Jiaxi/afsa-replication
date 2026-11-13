@@ -15,11 +15,12 @@ DT = torch.float64
 
 def run(cfg, panel, seeds=(0,), first=20, n_days=40, **kw):
     model = AFSAModel(cfg, list(seeds), "cpu", DT)
-    lev = panel.levels[:100]
+    lev = panel.levels[:first]                                               # statistics of earlier days only
     model.set_level_stats(lev.mean(0).expand(len(seeds), -1), lev.std(0).expand(len(seeds), -1))
     days = (first + torch.arange(n_days))[None].expand(len(seeds), -1)
     batch = panel.batch(days, cfg.lookback)
-    return model, batch, model(batch, **kw)
+    with torch.no_grad():
+        return model, batch, model(batch, **kw)
 
 
 def test_factor_weights_are_a_softmax_over_the_days_universe(cfg, panel):
@@ -52,8 +53,10 @@ def test_residuals_and_weights_match_the_dense_formulas_of_the_paper(cfg, panel)
         w = w_eps.T @ out["w_port"][0, t - L][mem]                           # omega = (omega^eps)' omega^port
         assert torch.allclose(out["w"][0, t - L][mem], w / w.abs().sum(), atol=1e-12)
         assert torch.allclose(model.loadings(out["wF"])[0, t][mem], beta_T, atol=1e-9)
-        # the residual portfolios carry almost no factor exposure (exactly none without the ridge)
-        assert (wF @ w_eps).abs().max() < 1e-3 * wF.abs().max()
+        # the residual portfolios carry almost no factor exposure: what is left is of the order of the ridge
+        G = wF @ wF.T + cfg.ridge * torch.eye(cfg.K, dtype=DT)
+        assert torch.allclose(wF @ w_eps, cfg.ridge * torch.linalg.solve(G, wF), atol=1e-12)
+        assert (wF @ w_eps).abs().max() < 0.01 * wF.abs().max()
 
 
 def test_portfolio_returns_costs_and_objective(cfg, panel):
@@ -62,8 +65,9 @@ def test_portfolio_returns_costs_and_objective(cfg, panel):
     w, R = out["w"][0].numpy(), batch.R[0].numpy()
     assert np.allclose(np.abs(w).sum(1), 1.0)                                # ||omega||_1 = 1 every day
     assert np.allclose(out["ret"][0].numpy(), (w[1:] * R[L + 1:]).sum(1))
-    # R^port = eps' omega^port up to the normalisation: the portfolio only holds residuals
-    scale = np.abs(model.project(out["wF"][:, L:], model.gram_factor(out["wF"])[:, L:], out["w_port"])[0].numpy()).sum(1)
+    # R^port = eps' omega^port up to the normalization: the portfolio only holds residuals
+    G, chol = model.gram(out["wF"])
+    scale = np.abs(model.project(out["wF"][:, L:], (G[:, L:], chol[:, L:]), out["w_port"])[0].numpy()).sum(1)
     assert np.allclose(out["ret"][0].numpy(), (out["eps"][0, L + 1:].numpy() * out["w_port"][0, 1:].numpy()).sum(1) / scale[1:])
     turnover = np.abs(w[1:] - w[:-1]).sum(1)
     short = np.maximum(-w[1:], 0).sum(1)
@@ -148,6 +152,42 @@ def test_dropped_characteristic_groups_are_ignored(cfg, arrays):
     assert not torch.allclose(full["w"], base["w"])                          # the full model does use those columns
 
 
+def test_dropped_single_characteristics_are_ignored(cfg, arrays):
+    drop = Config(**{**cfg.to_dict(), "drop_chars": ("Ret_D1", "Vol")})
+    cols = [CHARACTERISTICS.index(c) for c in drop.drop_chars]
+    other = {k: v.copy() for k, v in arrays.items()}
+    other["ranks"][:, :, cols] = np.random.default_rng(3).uniform(-0.5, 0.5, size=other["ranks"][:, :, cols].shape)
+    _, _, a = run(drop, make_panel(arrays))
+    _, _, b = run(drop, make_panel(other))
+    assert torch.equal(a["w"], b["w"]) and sum(drop.char_mask) == N_CHAR - 2
+    assert "_dropchar-Ret_D1+Vol" in drop.name() and Config.from_dict(drop.to_dict()) == drop
+
+
+def test_cumulative_input_is_the_running_sum_of_the_lagged_residuals(cfg, panel):
+    model, batch, out = run(Config(**{**cfg.to_dict(), "cumulative": True}), panel)
+    L = cfg.lookback
+    x = out["eps"].unfold(1, L, 1)[:, : out["eps"].shape[1] - L] * cfg.resid_scale     # [1, T-L, U, L], oldest lag first
+    path = torch.stack([x[..., : j + 1].sum(-1) for j in range(L)], dim=-1)
+    with torch.no_grad():
+        assert torch.allclose(out["w_port"], model.signal(path) * batch.valid[:, L:], atol=1e-12)
+    _, _, plain = run(cfg, panel)
+    assert torch.equal(out["eps"], plain["eps"]) and not torch.allclose(out["w_port"], plain["w_port"])
+
+
+def test_risk_free_hurdle_of_the_printed_objective(cfg, panel):
+    """On raw returns R + rf, with the paper's numerator, the net return falls by rf (1 - sum of the weights)."""
+    model, batch, out = run(Config(**{**cfg.to_dict(), "rf_hurdle": True}), panel)
+    L = cfg.lookback
+    w, rf = out["w"][0, 1:].numpy(), batch.rf[0, L + 1:].numpy()
+    assert np.allclose(rf, 1e-4)
+    raw = (w * (batch.R[0, L + 1:].numpy() + rf[:, None])).sum(1)           # the portfolio's return on raw returns
+    net = raw - 0.0005 * out["turnover"][0].numpy() - 0.0001 * out["short"][0].numpy() - rf
+    _, parts = model.objective(out)
+    assert np.isclose(parts["sharpe_net"][0].item(), net.mean() / net.std() * np.sqrt(252))
+    _, plain = AFSAModel(cfg, [0], "cpu", DT).objective(out)                 # the default objective on the same portfolio
+    assert not np.isclose(parts["sharpe_net"][0].item(), plain["sharpe_net"][0].item())
+
+
 def reference_signal(model: AFSAModel, x: torch.Tensor) -> torch.Tensor:
     """LongConv written as in Appendix A and the reference implementation: whole sequences, FFT convolution."""
     cfg, L, d = model.cfg, model.cfg.lookback, model.cfg.d_model
@@ -178,12 +218,40 @@ def test_longconv_equals_the_fft_convolution_of_the_appendix(n_layers):
     assert torch.allclose(model.signal(x), reference_signal(model, x), atol=1e-11)
 
 
+def test_ridge_solve_gradient(cfg, panel, monkeypatch):
+    """The hand-written gradient of the K x K solve against finite differences and against plain autograd."""
+    import afsa.model
+
+    def solve(A, B):                                                         # G = A'A + ridge I, as in the model
+        G = A.transpose(-1, -2) @ A + 1e-3 * torch.eye(A.shape[-1], dtype=DT)
+        return afsa.model._SpdSolve.apply(G, torch.linalg.cholesky(G.detach()), B)
+
+    A = torch.randn(2, 3, 7, 4, dtype=DT, requires_grad=True)
+    B = torch.randn(2, 3, 4, 1, dtype=DT, requires_grad=True)
+    assert torch.autograd.gradcheck(solve, (A, B), atol=1e-7)
+
+    def gradients():
+        model = AFSAModel(cfg, [0, 1], "cpu", DT)
+        days = torch.tensor([20, 60])[:, None] + torch.arange(40)[None]
+        objective, _ = model.objective(model(panel.batch(days, cfg.lookback), train=False))
+        objective.sum().backward()
+        return {n: p.grad.clone() for n, p in model.named_parameters()}
+
+    ours = gradients()
+    monkeypatch.setattr(afsa.model._SpdSolve, "apply", staticmethod(lambda G, chol, B: torch.linalg.solve(G, B)))
+    plain = gradients()
+    for name in ours:
+        if name != "W_level":                                                # its gradient is rounding noise around zero
+            assert torch.allclose(ours[name], plain[name], rtol=1e-6, atol=1e-9), name
+    assert ours["Q"].abs().sum() > 0
+
+
 def test_squash_is_a_soft_threshold():
     k = torch.tensor([-0.5, -0.05, 0.0, 0.02, 0.3])
     assert torch.allclose(squash(k, 0.1), torch.tensor([-0.4, 0.0, 0.0, 0.0, 0.2]))
 
 
-def test_initialisation():
+def test_initialization():
     cfg = Config(K=30)
     p = init_member(cfg, 0)
     d, L = cfg.d_model, cfg.lookback
@@ -195,6 +263,8 @@ def test_initialisation():
     assert decay[-1, -1] < 1e-6 < decay[0, -1]                               # fast and slow filters
     same, other = init_member(cfg, 0), init_member(cfg, 1)
     assert all(torch.equal(p[k], same[k]) for k in p) and not torch.equal(p["Q"], other["Q"])
+    wide = init_member(Config(K=30, w_init_scale=3.0), 0)                    # only W^K changes
+    assert torch.allclose(wide["W_rank"], 3 * p["W_rank"]) and torch.equal(wide["Q"], p["Q"]) and torch.equal(wide["kernel0"], p["kernel0"])
 
 
 def test_models_in_one_batch_are_independent(cfg, panel):
@@ -234,8 +304,9 @@ def test_gpu_float32_agrees_with_cpu_float64(cfg, arrays):
     ref = run(cfg, make_panel(arrays, DT))[2]
     panel = type(make_panel(arrays)).from_arrays(**arrays, device="cuda", dtype=torch.float32)
     model = AFSAModel(cfg, [0], "cuda")
-    lev = panel.levels[:100].double()
+    lev = panel.levels[:20].double()
     model.set_level_stats(lev.mean(0)[None], lev.std(0)[None])
-    out = model(panel.batch((20 + torch.arange(40))[None], cfg.lookback))
+    with torch.no_grad():
+        out = model(panel.batch((20 + torch.arange(40))[None], cfg.lookback))
     assert torch.allclose(out["w"].double().cpu(), ref["w"], atol=2e-4)
     assert torch.allclose(out["ret"].double().cpu(), ref["ret"], atol=1e-5)

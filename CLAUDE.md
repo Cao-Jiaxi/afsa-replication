@@ -1,208 +1,244 @@
 # CLAUDE.md
 
-Guide for Claude Code in this workspace (`c:\Claude\AFSA`). It is loaded at the start of every session, so keep it accurate: update §8 Status, §9 Decisions and §10 Results as work progresses, and replace stale text instead of appending.
+Guide for Claude Code in `c:\Claude\AFSA`, loaded every session. Keep it short and true: update §7, §9 and §10 as work moves, replace stale text, and put long detail in `NOTES.md`. Keep the section numbers, because repo files cite §7 (the baseline) and §8 (no look-ahead).
 
 ## 1. Project
 
-- **Course:** AMS 520 *Machine Learning in Quantitative Finance*, Stony Brook, Fall 2026 (Prof. Paweł Polak). Group project; teammate Ander Ibarrondo built the data.
-- **Paper:** Epstein, Wang, Choi and Pelger, *Attention Factors for Statistical Arbitrage* (AFSA), ICAIF '25: `3768292.3770398.pdf`.
-- **Current goal:** reproduce the **Attention Factors + LongConv** results, i.e. the attention rows of Table 2, out-of-sample 1998-01 to 2021-12.
-- **Later:** Table 3, Figures 2–4, the PCA + LongConv benchmark and the extension to 2022–2025 (our CRSP ends 2025-12). The extension is what the professor asked for: he has already replicated AFSA in another project.
-- **Deliverables** (syllabus): an interactive Jupyter/Colab report; a GitHub repo with all code and docs (no data, no credentials); presentations for Phase II (Lecture 22: EDA and first empirical results) and Phase III (final-exam day).
+- **Course:** AMS 520 *Machine Learning in Quantitative Finance*, Stony Brook, Fall 2026 (Prof. Paweł Polak). Group project with Ander Ibarrondo, who built the data.
+- **Paper:** Epstein, Wang, Choi and Pelger, *Attention Factors for Statistical Arbitrage* (AFSA), ICAIF '25.
+- **Goal now:** settle the open specification (§10), then rerun the Attention Factors + LongConv rows of Table 2 (1998–2021) under it and under `--fill none`.
+- **Later:** Table 3, Figures 2–4, PCA + LongConv, and the 2022–2025 extension. The extension is the professor's main ask; he has already replicated AFSA elsewhere.
+- **Deliverables:** a Jupyter/Colab report; a GitHub repo with code and docs (no credentials); presentations at Phase II (Lecture 22, "first empirical results"; date to confirm) and Phase III (final-exam day).
 
 ## 2. Workspace
 
 ```
-c:\Claude\AFSA\
-├── CLAUDE.md
-├── 3768292.3770398.pdf      # AFSA paper (the target)
-├── 1904.00745v6.pdf         # Chen, Pelger and Zhu, Deep Learning in Asset Pricing: source of the 39 characteristics (AFSA ref. [7])
-├── 2106.04028v2.pdf         # Guijarro-Ordonez, Pelger and Zanotti, Deep Learning Statistical Arbitrage: cost model, OU benchmark (AFSA ref. [19])
-├── AMS_520_Fall2026.pdf     # syllabus
-├── Ander\                   # copy of Ander's shared-Drive folder (2026-11-12): processed data and docs, NO code
-│   ├── data\                # 10 parquet files = Ander's data/processed, built 2026-10-13
-│   ├── README.md            # data guide for the team: start here
-│   ├── AFSA Replication Data Reference.html     # how the files are built and joined; missing values
-│   ├── AFSA Characteristics Reference.html      # 39 characteristic cards, match rates vs Pelger, top-500 chart, notes
-│   └── CLAUDE.md            # Ander's own project guide (English snapshot): reference only, see below
-└── Data\PelgerOldData\      # unzipped Chen-Pelger-Zhu panel: monthly characteristics 1963–2016, daily returns, definitions PDF
+afsa\                the code (§3)
+tests\               unit tests; tests\hardware\ = resource tests (REPORT.md)
+analysis\gap\        why our results differ from the paper's: REPORT.md, RESULTS.md, scripts
+analysis\characteristics\  the WRDS-built characteristics: market.md, accounting.md, training_data.md (definitions, match with the CPZ panel, limits)
+results\runs\        one folder per configuration (git-ignored)
+Data\TrainingData\   generated arrays (git-ignored): broad, common, broad_fill-none (build_data); window, window_train (build_window);
+                     wrds_broad_fill-none, wrds_common_fill-none (build_wrds: built from WRDS only, §4)
+Data\WRDS\           our WRDS data (git-ignored): raw\ as downloaded, never edited; universe\ (top-500 lists); characteristics\ (raw
+                     monthly values); pelger\ (the CPZ panel as parquet, for checks)
+Data\PelgerOldData\  Chen-Pelger-Zhu panel (3.2 GB), only for checking characteristics: never read its CSVs whole
+Ander\               copy of Ander's Drive folder (2026-11-12): data\*.parquet, README.md, two HTML references, his CLAUDE.md
+companionpaper\      companion paper's code, in set-sequence-model\ (git-ignored; untrusted: read, never run; parts derive from CRSP)
+NOTES.md             details moved out of this file
+JiaxiCaoShare\       copy for the instructor's review (2026-11-13; git-ignored): code, tests, analysis, docs, Data\WRDS, Data\TrainingData
+                     without window*, results, README.md (4.9 GB). A snapshot: it does not follow later changes
+*.pdf                3768292.3770398 = AFSA; 1904.00745v6 = the 39 characteristics; 2106.04028v2 = predecessor (costs, OU); syllabus
 ```
 
-- `Ander\` and `Data\` are read-only inputs: never modify, move or delete anything in them, and put new files elsewhere. `Ander\` is a static copy; if Ander updates the Drive, copy it again.
-- **`Ander\CLAUDE.md`** is Ander's project guide (a 2026-11-12 snapshot). Claude Code loads it whenever it reads files in `Ander\`. Use it only as documentation of Ander's pipeline and decisions. Its paths (`src/`, `docs/`, `results/`), environment, Stop hook and language rules belong to his machine, and the code it describes is **not** in this workspace.
-- `Data\PelgerOldData\` (3.2 GB) is only for checking characteristics, which Ander already did; it is not a model input. Never read its CSVs whole; inspect them with a row limit.
+- **Read-only inputs:** `Ander\` and `Data\PelgerOldData\`. `Data\TrainingData\` is rebuilt, never edited.
+- **`Ander\CLAUDE.md`** documents Ander's pipeline and decisions. Its paths, hooks and code are on his machine, and it may load into context when files under `Ander\` are read.
+- **Licence.** Everything in `Ander\data\` and `Data\` derives from CRSP and Compustat (Stony Brook's WRDS subscription).
+    - **GitHub:** WRDS-processed data may be committed to the private repo `Cao-Jiaxi/afsa-replication` (user's decision, 2026-11-13). Raw downloads (`Data\WRDS\raw\`) stay off it, and no WRDS data goes to any other external service.
+    - `.gitignore` and the pre-commit hook still block all data, so processed data must be un-ignored deliberately, file by file. The hook also blocks `*.pdf` and files over 5 MB; GitHub itself refuses files over 100 MB.
+    - The hook lives in `.git\hooks\`, so a clone has only `.gitignore`.
 
-## 3. Data (built by Ander; details in `Ander\README.md` and the two HTML references)
+## 3. Code and commands
 
-The model needs three files from `Ander\data\`:
+Each `afsa\` module opens with a docstring saying what it holds:
+- `config.py`: `Config` holds every parameter; its defaults are Table 4 plus §7.
+- `model.py`: §5 for M independent models at once.
+- `metrics.py`: the Table 2 metrics and the paper's rows (`PAPER_TABLE2`).
+- Also `panel.py` (GPU arrays, day × stock batches), `train.py` (training loop, out-of-sample evaluation), `run.py` (the rolling experiment), `build_data.py` and `build_window.py` (the arrays of §4).
+- `wrds_db.py`: `query(sql, params)` → DataFrame, not via the `wrds` package (it pins pandas < 2.3). The user runs its setup (`-m afsa.wrds_db setup`; login in their `pgpass.conf`) and approves Duo pushes. Legacy `crsp.dsf` ends 2024-12-31, so use `crsp.dsf_v2` for 2025. Downloads go under `Data\WRDS\raw\`. The account has no international data (Compustat Global, Datastream, Worldscope: permission denied).
+- `wrds_universe.py`: the monthly top 500 from our own downloads (§4); `download`, `build`, `compare` (against Ander's).
+- `wrds_data.py`: the other raw downloads (its docstring lists every file and its units) and the CPZ panel as parquet. `wrds_db.copy_query` is the fast path for large tables.
+- `chars_market.py` (13 monthly market characteristics) and `chars_accounting.py` (22 accounting ones): `build` and `check`; `check` compares with the CPZ panel through `pelger_check.compare`.
+- `build_wrds.py`: the 4 daily characteristics, `rf`, the ranking and the training arrays `wrds_<universe>_fill-<rule>` (§4).
 
-| File | Key | What the model uses |
-| --- | --- | --- |
-| `X_amplio.parquet` | (date, permno) | The input matrix: 4.53 M universe stock-days, 1990-01-02 to 2025-12-31, no NaN. 79 float32 columns: the 39 characteristics of Table 1 as cross-sectional ranks in [−0.5, 0.5] (Table 1 names and order), `med_<name>` = their 39 raw cross-sectional medians, and `rf` of the previous trading day |
-| `crsp_daily.parquet` | (permno, date) | `ret` (daily total return in decimals, delisting return included); `in_universe` marks the stock-days of the main universe |
-| `factors_daily.parquet` | date | `rf` (daily, decimals) for excess returns; also the trading calendar, the Fama-French factors and `ewretd` |
+```powershell
+.venv\Scripts\python.exe -m afsa.wrds_data download           # daily CRSP, Compustat annual, CCM links, indices, Fama-French (~2 min; skips files on disk)
+.venv\Scripts\python.exe -m afsa.chars_market build           # -> Data\WRDS\characteristics\market.parquet (~15 s); `check` = match with the CPZ panel
+.venv\Scripts\python.exe -m afsa.chars_accounting build       # -> accounting.parquet, link.parquet (~5 s); `check --detail`; `build --all-fills` / `--strict`
+.venv\Scripts\python.exe -m afsa.build_wrds                   # -> TrainingData\wrds_broad_fill-none, wrds_common_fill-none (~1 min each, 5.6 GB RAM)
+.venv\Scripts\python.exe -m afsa.run --universe wrds_broad --fill none --K 8 --seeds 0 1 2   # a run on the WRDS-built arrays (only a K = 30 validation run so far)
+.venv\Scripts\python.exe -m afsa.build_data                   # check sources, rebuild TrainingData\broad (~10 s; --universe common)
+.venv\Scripts\python.exe -m afsa.build_data --fill none       # the §4 policy -> broad_fill-none (~100 s)
+.venv\Scripts\python.exe -m afsa.build_window                 # fixed-per-window universes (--rule window_train, --fill none, --check)
+.venv\Scripts\python.exe -m pytest tests -q                   # 159 tests (~30 s)
+.venv\Scripts\python.exe -m afsa.wrds_universe download       # crsp.msf_v2 + crsp.stkdelists -> Data\WRDS\raw\ (~1 min; may need a Duo approval)
+.venv\Scripts\python.exe -m afsa.wrds_universe build          # top 500, broad and common -> Data\WRDS\universe\ (~10 s); then `compare`
+.venv\Scripts\python.exe -m afsa.run --K 8 30 --seeds 0 1 2   # rolling 1998–2021 -> results\runs\<configuration>\ (--help lists all)
+.venv\Scripts\python.exe tests\hardware\run_tests.py          # ~20 min of GPU training -> tests\hardware\RESULTS.md
+.venv\Scripts\python.exe analysis\gap\variants.py --list      # gap variants; other scripts in analysis\gap\REPORT.md §8
+```
 
-The folder also has:
-- `universe.parquet`: the monthly top 500, with `tipo`, `me`, `rank`, `gvkey`, names and SIC;
-- `characteristics.parquet` and `characteristics_daily.parquet`: raw values, gaps kept;
-- `compustat_annual.parquet` and `ccm_link.parquet`;
-- `X_comun.parquet` and `universe_comun.parquet`: US common stocks only, for robustness.
+- **Flag spelling.** `Config` flags take underscores (`--train_years`, `--drop_groups`, `--cumulative`, `--universe`, `--fill`). Run flags take hyphens (`--first-year`, `--last-year`, `--max-models`, `--tag`).
+- **Tests** run on synthetic data, except those that read files under `Data\` (each is skipped without its files) and one that needs CUDA. The data tests of `test_build_wrds.py` fail on arrays older than their sources: rebuild with `afsa.build_wrds`. No test trains a model on a `fill none` folder.
+- **Run folders** are named after their non-default parameters, e.g. `attn_K030_drop-past_returns`, plus `_<tag>` if given.
+    - Each holds `config.json` and `seed<s>\<year>.npz` + `.pt`.
+    - Finished (year, seed) pairs are skipped, so runs resume. If the folder already holds a different `config.json`, the run stops with an error: use `--tag`.
+    - Only `afsa.run` folders have `summary.json`. Folders made by `variants.py` are scored in `analysis\gap\RESULTS.md`, without beta.
+    - `train_years-6` folders are 1996–1997 validation runs.
+- **Before changing a `Config` default,** write the old value into the existing `config.json` files, or move those folders. Missing keys load as the current default, and none of the 69 files has `fill`, so `afsa.run` would relabel the old runs and skip them as done.
 
-Conventions:
-- The X row of day d uses information up to d−1. Pair it with `ret` of day d (same date and permno): that gives the paper's X_{t−1} and R_t.
-- **Main universe ("broad").** Each month, the 500 largest securities by CRSP market cap at the previous month-end, among all NYSE/AMEX/NASDAQ equities. ADRs, foreign shares, REITs and MLPs are included; funds are excluded. Only 70 of the 109 firms named in the paper's Figures 3–4 are in it, so results will be comparable, not identical.
-- 87 universe stock-days have a NaN `ret` (trading suspensions). Count them as 0 and keep the position.
-- Units: returns in decimals; CRSP market cap in thousands of USD; Compustat in millions of the reporting currency (CAD filers are not converted).
-- The Fama-French `rf` has only 4 decimals, so it is 0 throughout 2003 and 2009–2017.
-- The files were written with pandas 3.0.1. With pandas and pyarrow, `month` columns load as Period[M].
-- Each X file takes 82 MB on disk but about 1.5 GB in memory. Load only the window needed:
-  ```python
-  import pandas as pd
-  X = pd.read_parquet("Ander/data/X_amplio.parquet",
-                      filters=[("date", ">=", pd.Timestamp("1990-01-01")), ("date", "<=", pd.Timestamp("1997-12-31"))])
-  ```
-- Characteristic groups (Table 1). Table 3 drops one group at a time:
-    - past returns: r2_1, r12_2, r12_7, r36_13, ST_Rev, Ret_D1, Ret_W1, STD_W1;
-    - trading frictions: AT, LME, LTurnover, Rel2High, Resid_Var, Spread, SUV, Variance, Vol, Beta;
-    - value: A2ME, BEME, C, CF, CF2P, Q, Lev, E2P;
-    - profitability: PROF, CTO, FC2Y, OP, PM, RNA, D2A;
-    - investment: Investment, NOA, DPI2A;
-    - intangibles: OA, OL, PCM.
-- **Licence.** Everything in `Ander\data\` and `Data\` derives from CRSP and Compustat under Stony Brook's WRDS subscription. Never commit these files or any data derived from them, upload them, or send them to an external service. The repo's `.gitignore` must exclude them.
+## 4. Data
 
-## 4. Model and protocol (AFSA §3–4, Appendices A–B)
+- **Sources:** Ander's `X_amplio.parquet` (79 inputs per universe stock-day), `crsp_daily.parquet` (`ret`) and `factors_daily.parquet` (`rf` and the calendar). His `README.md` and HTML references explain how they were built.
+- **Arrays.** Each build runs 16 checks (18 with `--fill none`), all passing; results are in each folder's `meta.json`. `broad` is 9,067 days (1990-01-02 to 2025-12-31) × 500 slots: 4,527,395 stock-days and 2,120 PERMNOs.
+- **Timing.** Row t pairs what was known at the close of t−1 with the return of day t, i.e. the paper's X_{t−1} and R_t (checked on `Ret_D1`).
+- **`broad` (main universe):** each month, the 500 largest NYSE/AMEX/NASDAQ equities by previous month-end market cap, ADRs, foreign shares, REITs and MLPs included. It holds only 70 of the 109 firms in the paper's Figures 3–4, so results are comparable, not identical.
+- **`common`** (US common stocks only) is for robustness.
+- **Rebuilt from WRDS** (2026-11-13, `afsa.wrds_universe`): both universes equal Ander's on all 216,000 stock-months of 1990–2025, with the same ranks, caps and types (`tests\test_wrds_universe.py`). They also hold the lookback lists of 1989-11 and 1989-12. Rule and CIZ fields in `NOTES.md` §5.
+- **Fixed per window** (robustness): the 500 largest at the end of the training years, among the 2,521 securities in Ander's files.
+    - `window` keeps securities with a return on every day of the training and test years, so it looks ahead. It approximates the companion paper's rule (arXiv 2505.11243; `NOTES.md` §4).
+    - `window_train` requires the training years only.
+    - Stored as `<rule>\<n>y\<test year>\`: 8y for 1998–2021, 6y for 1996–1997.
+- **Missing characteristics (policy, Prof. Polak, 2026-11-13):** compute each characteristic, and leave it empty if its raw inputs are not available. When ranking, an empty characteristic gets rank 0 (the median, harmless to the network), and the stocks with a value are ranked among themselves into [−0.5, 0.5]. No carry-forward.
+    - This is `--fill none`, built for `broad` only (effects in `NOTES.md` §1).
+    - Ander's X (`--fill last`, still the default) carries the last value forward with no age limit, as the paper's §4.1 says.
+- **Returns** are in excess of `rf`, stock by stock. The 87 missing returns (suspensions) count as total returns of 0. `rf` has 4 decimals, so it is 0 throughout 2003, 2009–2017 and 2021.
+    - On WRDS, `ff.factors_daily.rf` takes only 7 distinct values ever.
+    - `ff.factors_monthly.rf` has 4 decimals per month: 0.21% in 2016 and 0.79% in 2017, where the daily series is 0. It runs to 2026-09.
+    - `frb.rates_daily.dtb3` (3-month bill) ends 2025-02-11. `crsp.tfz_*` is not readable.
+- **Loss days** start on 1990-02-14 in the Ander-based folders (§7). After that, 3.8% of stock-days get no signal, because they have fewer than 30 prior days in the universe.
+- **WRDS-built arrays** (2026-11-13; `wrds_broad_fill-none`, `wrds_common_fill-none`). Nothing of Ander's is used. Rules in `NOTES.md` §6, detail in `analysis\characteristics\`.
+    - **Span:** 9,108 days from 1989-11-01. The 41 days of 1989 are lookback only, so loss days start on 1990-01-02. The 4,527,395 broad stock-days of 1990–2025 equal Ander's.
+    - **Monthly formulas** reproduce the CPZ panel: exactly equal in 98.7–100% of stock-months for 33 of 35. Resid_Var and Beta reach 99.95% and 99.77% only with French's factor file of 2016-11; with today's WRDS factors, which the arrays use, they agree in rank (0.9998, 1.0000).
+    - **The panel covers** 56.6% of the universe's stock-months of 1990–2016, almost no bank or insurer, and nothing after 2016.
+    - **Departures from the panel, to avoid look-ahead:** accounts enter 4 months after the fiscal year-end (6 for ADRs and non-US issuers); today's factors.
+    - **Missing inputs:** 15 secondary accounting items count as 0 where the panel shows it; a missing XSGA, DP, COGS, CEQ or LCT leaves the characteristic empty. FC2Y, OP and OL are at rank 0 on 22.6% of stock-days, OA on 20.8%, DPI2A on 11.0%.
+    - **Daily characteristics** follow the paper's words: Ret_D1 = return of t−1; Ret_W1, STD_W1 and Vol (shares) over days t−5..t−1.
+    - **`rf`** is the monthly Fama-French rate spread over the month's scheduled trading days.
+    - **Audited** twice by independent agents (look-ahead by truncation, panel match recomputed, arrays rebuilt on every day): no critical or major finding left.
 
-On each day t, over the N ≤ 500 stocks in that day's universe, with X_{t−1} ∈ R^{N×79}:
+## 5. Model and protocol (AFSA §3–4, Appendices A–B)
 
-1. Embedding X̃ = X W^K, with W^K ∈ R^{79×d_x}.
-2. Factor weights ω^F = Softmax(Q X̃ᵀ / √d_x), with Q ∈ R^{K×d_x}. The softmax runs over stocks, so each factor's weights sum to 1. Factors F_t = ω^F R_t.
-3. Loadings βᵀ = ω^Fᵀ (ω^F ω^Fᵀ + λ_ridge I_K)⁻¹.
-4. Residuals ε_t = R_t − βᵀ F_t = ω^ε R_t, with ω^ε = I_N − βᵀ ω^F. Compute them as R − βᵀ(ω^F R); never build the N×N matrix.
-5. Signal ω^port_i = LongConv_θ(ε_{i, t−30..t−1}): one network shared by all stocks.
-6. Asset weights ω = (ω^ε)ᵀ ω^port = ω^port − ω^Fᵀ(β ω^port), scaled so that ‖ω‖₁ = 1. Portfolio return R^port_t = ωᵀ R_t.
-7. Cost_t = 0.0005 ‖ω_t − ω_{t−1}‖₁ + 0.0001 ‖max(−ω_t, 0)‖₁. Net return = R^port_t − cost_t.
-8. Objective, to maximize: (mean net return − R_f) / sd + λ_Var · (1/N) Σ_i (1 − Var(ε_i)/Var(R_i)). W^K, Q and θ are learned jointly, in one step.
+On day t, over the N ≤ 500 stocks of the universe, with X_{t−1} ∈ R^{N×79}:
 
-**LongConv** (App. A): y = K̄ ∗ u + D ⊙ u along the time axis, with kernel K ∈ R^{d×T} and skip D ∈ R^d, computed by FFT.
-- Squash regularizer: K̄ = sign(K) · max(|K| − λ_squash, 0).
-- Initialization: K_t^(h) = x · exp(−(t/T)(d/2)^{h/d}), with x ~ N(0, 1).
+1. ω^F = Softmax(Q (X W^K)ᵀ / √d_x), with the softmax over stocks (K × N). Factors F_t = ω^F R_t.
+2. βᵀ = ω^Fᵀ (ω^F ω^Fᵀ + λ_ridge I)⁻¹. Residuals ε_t = R_t − βᵀ F_t = ω^ε R_t.
+3. ω^port_i = LongConv(ε_{i, t−30..t−1}): one network for all stocks.
+4. ω = (ω^ε)ᵀ ω^port, scaled to ‖ω‖₁ = 1. Cost_t = 0.0005 ‖ω_t − ω_{t−1}‖₁ + 0.0001 ‖max(−ω_t, 0)‖₁.
+5. Maximize net Sharpe + λ_Var · (1/N) Σ_i (1 − Var(ε_i)/Var(R_i)). W^K, Q and LongConv are learned jointly.
 
-**Hyperparameters** (Table 4):
-- d = 32 (32 convolutions), d_x = 32, 1 layer, dropout 0.1;
-- 30 epochs, λ_Var = 100, learning rate 0.003, weight decay 0.05 in LongConv, λ_squash = 0.001;
-- lookback of 30 days.
+- **Protocol:** a rolling 8-year window, retrained yearly. 24 test years (1998–2021); the first window is 1990–1997. K ∈ {1, 3, 5, 8, 15, 30, 100}, 3 seeds.
+- **Medians and `rf`** are equal across a day's stocks, so the softmax cancels them: the model as written ignores them (there is a test).
 
-The text says "Adam" but cites AdamW (Loshchilov and Hutter, ref. [27]).
+## 6. Targets
 
-**Protocol** (§4.2):
-- Rolling 8-year training window, retrained every year. Out-of-sample 1998–2021: 24 test years; the first window is 1990–1997.
-- **Tuning.** The paper tunes on the last two years of the first window: train on 1990–1995, validate on 1996–1997. **Our reproduction skips this step** (§9): the hyperparameters come from Table 4 and the open choices below from Ander. The first window is fitted once, on the full 1990–1997.
-- Table 2 reports K ∈ {1, 3, 5, 8, 15, 30, 100} for attention; the text also lists 10.
-- Results are averaged over several seeds. Table 3 shows a Sharpe standard deviation of 0.07–0.17 across seeds.
-- **Lookback at batch and window starts.** A batch only selects which days enter the loss. Each batch also loads the 30 days before its first loss day as residual lookback, plus 1 more day so that the first day's cost has ω_{t−1}. The lookback days feed LongConv but get no return or Sharpe term. So a batch boundary never shortens the history.
-    - The only real gap is the data start, 1990-01-02: the first ~30 trading days have no history before them. In the first window (1990–1997), loss days can start only around mid-February 1990, the 31st trading day (≈ 1990-02-13; check against the `factors_daily` calendar).
-    - Later windows (from 1991) and every test year take their lookback from the days before the window, so they have no such gap.
+- **Table 2** (1998–2021, annualized; SR = μ/σ; beta against the equal-weighted market): the attention rows are `PAPER_TABLE2`, also shown in §9. Their costs imply 2.6–2.8 bp a day for K ≤ 30 and 3.4 for K = 100. That is a daily turnover of 0.42–0.47 (0.58 for K = 100), if short exposure is 0.5.
+- **Benchmarks** (SR / SR_net): PCA + LongConv 2.64 / 1.50 (K = 8) and 2.79 / 1.57 (K = 30); PCA + OU 0.78 / −4.15 (K = 8); equal-weighted market 0.42.
+- **Table 3** (K = 30, one characteristic group dropped; SR / SR_net):
 
-**Left open by the paper.** We adopt Ander's choice for each one (in brackets, from `Ander\CLAUDE.md` §7) and do not re-run the validation. His log says he settled the Sharpe scale, batching, λ_ridge and residual input on 1990–95 / 1996–97, and the rest by argument, not by test-year results.
-- Scale of the Sharpe ratio in the objective [annualized; with a daily Sharpe, λ_Var = 100 swamps the trading term].
-- Batching [126 consecutive trading days, with a random start and order each epoch; the days must be consecutive because costs depend on the previous day].
-- λ_ridge [1e-5].
-- Layers around the convolution [Linear 1→32, LongConv, GELU, dropout, Linear, residual + LayerNorm, readout of the last day, Linear → scalar].
-- Residual input [daily residuals in %, not cumulative].
-- Which projection produces the 30 lagged residuals: each day's own ω^ε_{s−1} or today's ω^ε_{t−1} [each day's own. This is inferred, not stated: Ander requires 30 prior days in the universe. Confirm against his code when it arrives].
-- Stocks with fewer than 30 days in the universe [ω^port = 0].
-- Return convention [per-stock excess returns, R − rf].
-- Scaling of the 39 medians and rf [standardized with the training-window mean and standard deviation].
-    - These 40 columns are the same for every stock on a given day. Under eq. (1) they only add a per-factor constant, which the softmax over stocks cancels, so the model as written ignores them.
-- Year boundary [the first test day pays the turnover from the old model's weights to the new one's].
-- Number of seeds [3].
+  | Group dropped | SR / SR_net |
+  | --- | --- |
+  | none | 3.97 / 2.28 |
+  | past returns | 1.50 / 0.59 |
+  | trading frictions | 2.90 / 1.34 |
+  | investment | 3.88 / 2.19 |
+  | profitability | 3.94 / 2.26 |
+  | intangibles | 3.91 / 2.24 |
+  | value | 4.08 / 2.32 |
 
-## 5. Targets
+- **Figure 2** (cumulative gross returns) is digitized in `analysis\gap\paper_fig2.csv`. It has 5,880 days, the first 245 returns of each year, while `afsa.metrics` scores all 6,040 days. Compare like with like.
+- **Figures 3–4:** the K = 8 model trained on 2013–2020, evaluated on the first trading day of 2021. They show the t-SNE of the betas and the top 10 weights of factors 1–6.
 
-**Table 2** (out-of-sample 1998–2021, annualized; μ and σ in %). The last column is derived, not printed in the paper: the implied average cost per day, (μ − μ_net)/252, in basis points.
+## 7. Decisions (what the paper does not specify; 2026-11-12 unless dated)
 
-| Model | K | SR | μ | σ | SR_net | μ_net | σ_net | Beta | Cost bp/day |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Attention | 1 | 3.05 | 14.45 | 4.74 | 1.68 | 7.94 | 4.72 | 0.05 | 2.6 |
-| Attention | 3 | 3.05 | 14.91 | 4.89 | 1.69 | 8.25 | 4.87 | 0.06 | 2.6 |
-| Attention | 5 | 2.92 | 14.21 | 4.87 | 1.58 | 7.66 | 4.85 | 0.07 | 2.6 |
-| Attention | 8 | 3.35 | 15.70 | 4.68 | 1.94 | 9.05 | 4.66 | 0.07 | 2.6 |
-| Attention | 15 | 3.81 | 16.66 | 4.37 | 2.25 | 9.78 | 4.35 | 0.06 | 2.7 |
-| Attention | 30 | 3.97 | 16.66 | 4.20 | 2.28 | 9.52 | 4.18 | 0.05 | 2.8 |
-| Attention | 100 | 4.52 | 16.45 | 3.64 | 2.19 | 7.93 | 3.62 | 0.05 | 3.4 |
-| PCA + LongConv | 8 | 2.64 | 14.88 | 5.63 | 1.50 | 8.42 | 5.61 | 0.09 | 2.6 |
-| PCA + LongConv | 30 | 2.79 | 15.15 | 5.42 | 1.57 | 8.47 | 5.40 | 0.09 | 2.7 |
-| PCA + OU | 8 | 0.78 | 2.04 | 2.61 | −4.15 | −10.83 | 2.61 | 0.00 | 5.1 |
-| EW market | – | 0.42 | 8.61 | 20.37 | 0.42 | 8.61 | 20.37 | 1.00 | – |
+| Decision | Reason |
+| --- | --- |
+| No tuning and no early stopping: each window trains 30 epochs (AdamW, constant learning rate) and keeps the last model | Table 4 gives the hyperparameters; Ander settled the open choices on 1990–95 / 1996–97 |
+| Ander's choices: annualized Sharpe in the objective; batches of 126 consecutive days; λ_ridge = 1e-5; block = Linear 1→32, LongConv, GELU, dropout, Linear, residual + LayerNorm, read-out of the newest day, Linear → scalar; residuals in %, not cumulative; each lag from its own day's projection; no signal under 30 prior days in the universe; per-stock excess returns (the paper's printed formula is `--rf_hurdle true`); medians and `rf` standardized over all days of the training years; a test year's first day pays the trade from the previous model; 3 seeds | His log (`Ander\CLAUDE.md` §7) records validation for the Sharpe scale, batching, λ_ridge and the residual input, and arguments for the rest. The lag projection is inferred from his docs |
+| Models train together in one GPU pass, with a leading model dimension; tests show this equals training them one by one. `window*` universes put one test year's seeds in each pass | 3.5–4 times faster (`tests\hardware\REPORT.md`) |
+| An epoch is 16 batches of 126 days tiling the window from a random offset, in random order. Windows short of 2,016 days (1998 by 23 days; 2002–2025 by 1–6) get evenly spread, slightly overlapping batches | Every model takes the same number of steps, which batching needs |
+| Explained variance: per-stock variances over the batch's loss days, for stocks with ≥ 21 days; plain average | The paper gives only the formula; a few days give a noisy ratio |
+| Initialization: W^K uniform ±1/√79; Q and D ~ N(0, 1); kernel as in Appendix A with x ~ N(0, 1); other layers as `nn.Linear`. Weight decay on the sequence model, none on W^K and Q | The paper gives only the kernel and "weight decay in LongConv model" |
+| The K × K ridge solve runs in float64, the rest in float32 | λ_ridge is 1e-5 and the solve is tiny |
+| Loss days start on the 32nd trading day of 1990 until the pre-1990 lookback exists; the first test day of 1998 is bought from cash | The day before a loss day needs its own 30-day history |
+| Each (seed, test year) has its own random streams for initialization, batch order and dropout | A model does not depend on which others share its pass |
+| 2026-11-13: data are rebuilt from our own WRDS downloads, starting with the universe. A security leaves only if its last trading day is before the formation day (`NOTES.md` §5) | The user's decision: WRDS is the only source. This rule reproduces Ander's universe exactly; a stale-price rule or excluding formation-day delistings did not |
+| 2026-11-13, WRDS build: each monthly formula is the one that reproduces the CPZ panel, also where it contradicts the written definition (list in `NOTES.md` §6) | The user's instruction: the panel is the arbiter |
+| 2026-11-13, WRDS build: fiscal rule `safe`. The panel's rule (July of Y to June of Y+1 uses Compustat `fyear` Y−1), but a fiscal year enters only once its year-end + 4 months (6 for ADRs and non-US issuers) is on or before the first day of the holding month | The panel's rule uses March–May year-ends 1–3 months old. 10-K: 90 days; 20-F: 6 months until fiscal 2011 |
+| 2026-11-13, WRDS build: a missing accounting input counts as 0 only where the panel shows the fill and a missing item plausibly means none (15 items). XSGA, DP, COGS, CEQ and LCT leave the characteristic empty | The user's missing-value rule. With every fill on, FC2Y was exactly 0 on 17.5% of universe stock-months, tied near the bottom instead of at rank 0. `build --all-fills` is the pure panel convention |
+| 2026-11-13, WRDS build: Resid_Var and Beta use today's WRDS Fama-French factors | WRDS is the only source, and one vintage covers 1990–2025. The 2016 file only verifies the formulas |
+| 2026-11-13, WRDS build: `rf` = monthly Fama-French rate over the month's scheduled trading days (realized days plus unscheduled closures) | The daily WRDS series has 4 decimals and is 0 in whole years |
+| 2026-11-13, WRDS build: daily characteristics by the paper's words (5 trading days to t−1, weekly share volume; all five days required). Ret_W1 and STD_W1 are rounded to 12 decimals before ranking | The paper is explicit. The companion code uses 7 days skipping the latest and one-day volume (§10). Rounding makes exact ties share a rank |
+| 2026-11-13, WRDS build: all 39 characteristics are ranked over the day's members (Ander's X ranks the monthly ones over the month's list) | One cross-section per day; moves a rank by at most 0.009 |
+| 2026-11-13: `train_span` refuses a training window whose first year the arrays hold only in part | The wrds folders hold 41 days of 1989 as lookback |
+| 2026-11-13: the missing-characteristic policy of §4 (`--fill none`), departing from the paper's §4.1. `Config.fill` stays `last` until Table 2 is rerun under it (see §3 before changing it) | Prof. Polak's instruction: rank 0 is the median, which does not distort the network's input |
 
-How to read it:
-- **Sharpe.** SR = μ/σ in every row (16.66 / 4.20 = 3.97), so μ already behaves like an excess, long-short return. Report SR as mean / sd of the strategy's daily returns, annualized.
-- **Beta** is measured against the equal-weighted market (its row has beta 1.00).
-- **Implied turnover.** Costs are 5 bp per unit of turnover plus 1 bp per unit of short exposure (between 0 and 1). So attention K = 30 implies a daily turnover of about 0.37–0.57, and PCA + OU K = 8 about 0.82–1.02.
-- **Table 3** (K = 30, one characteristic group dropped):
+## 8. Environment and rules
 
-  | Group dropped | SR | SR_net |
-  | --- | --- | --- |
-  | none | 3.97 | 2.28 |
-  | past returns | 1.50 | 0.59 |
-  | trading frictions | 2.90 | 1.34 |
-  | investment | 3.88 | 2.19 |
-  | profitability | 3.94 | 2.26 |
-  | intangibles | 3.91 | 2.24 |
-  | value | 4.08 | 2.32 |
+- **Machine:** Windows 11, PowerShell 5.1 (no `&&`). Python 3.13 in `.venv\`, pinned in `requirements.txt` (torch 2.11.0+cu128). RTX 5080 16 GB (needs a CUDA 12.8+ build; the desktop holds 2–3 GB), i7-12700KF, 32 GB RAM.
+- **git:** git and `gh` are on the PATH; a shell opened before git was installed (2026-11-12) needs `C:\Program Files\Git\cmd\git.exe`. `origin` is `github.com/Cao-Jiaxi/afsa-replication`, branch `main`. **Commit or push only when asked.**
+- **No look-ahead.** Weights for day t use information up to t−1 only, scaling statistics included (training window only). Never choose anything by looking at test-year results (1998 onward). If a choice must be revisited, compare on 1996–1997 only.
+- **One GPU job at a time, with memory headroom** (`run_tests.py` counts as a job).
+    - `afsa.run` sizes its passes from free GPU memory, up to 36 models; `--max-models` overrides.
+    - When memory runs out, Windows slows down instead of failing: two 36-model passes together filled the 16 GB and ran about 15 times slower.
+    - Timings are in `tests\hardware\REPORT.md`.
+- **Reproducibility.** Results, tables and figures come from code, and each run saves its configuration with its results. Every choice the paper does not specify gets a row in §7. Code, docs and conversation are in English.
 
-- **Figures 3–4** use the K = 8 model trained on 2013–2020, evaluated on the first trading day of 2021: t-SNE of the betas, and the top 10 weights of factors 1–6.
+## 9. Status and results
 
-## 6. Environment (this machine, checked 2026-11-12)
+- [x] Data (Ander, 2026-10-13). 2026-11-12: training arrays and checks; code and 35 unit tests; hardware tests; all seven K × 3 seeds, 1998–2021; gap analysis (`analysis\gap\REPORT.md`, 32 variants).
+- [ ] Decide with Ander (§10): cumulative residuals as the LongConv input, and the main universe. The `Config` defaults are still the §7 baseline.
+- [ ] `--fill none`: arrays built and checked; code paths in `config`, `build_data`, `build_window`, `run` and `analysis\gap`. **Paused at the user's request** before running the unit tests or any model with it, and before making it the default.
+- [x] Universe rebuilt from WRDS (2026-11-13): identical to Ander's, both universes (§4).
+- [x] The rest of the data from WRDS (2026-11-13): downloads, the 39 characteristics checked against the CPZ panel, and the training arrays `wrds_broad_fill-none` and `wrds_common_fill-none` (§4), audited twice.
+- [ ] Runs on the WRDS-built arrays (2026-11-13), rows below. K = 30: validation 1996–1997, then 1998–2025 in one folder (`attn_K030_universe-wrds_broad_fill-none`; its `summary.json` covers 1998–2025, so score sub-periods with `metrics.summarize(..., save=False)`). The first scoring failed: `metrics.market_returns` ignored the fill suffix of the folder (fixed, with a test). Addentax's −95% day (2022-09-01) is not among any seed's three worst days. Still to do: the other K; a `--universe broad --fill none` run to split the data source from the fill rule.
+- [ ] Commit and push, when asked. `origin/main` holds only `7875556` (2026-11-12, early code), and everything since is uncommitted or untracked. `.gitignore` also drops `tests\hardware\results\` and `analysis\gap\paper_fig2.csv` (rebuilt from the git-ignored PDF): decide on those first.
+- [ ] Stale docs, written before the companion code arrived:
+    - `build_window.py`, which calls `window` the companion's rule;
+    - `analysis\gap\REPORT.md` §2 and §5, `fig2_digitize.py` and `yearly.py`.
+- [ ] Ander's code and results (§10); the lookback before 1990 (§4).
+- [ ] Later:
+    - Table 3's other four rows. Past returns and trading frictions are done at K = 30 with raw input: SR / SR_net 3.14 / 1.14 and 3.54 / 0.85.
+    - Figures 2–4, PCA + LongConv, the extension (`--first-year 2022 --last-year 2025`), the notebook and the presentations.
 
-- Windows 11 Pro. The shell is Windows PowerShell 5.1, so there is no `&&`: use `;` or `if ($?) { … }`.
-- **Python** 3.13.17 (winget, user scope; launch with `py -3.13`; bare `python` may still hit the Store alias). **Project venv: `.venv\`**, so run `.venv\Scripts\python.exe`. Installed 2026-11-12: torch 2.11.0+cu128 (sm_120 confirmed on the 5080), pandas 3.1.1, numpy 2.5.4, pyarrow 26.0.1, scipy, matplotlib, jupyter and pytest 9.2.0. Ander's parquet files read correctly. Pins are in `requirements.txt`. conda and uv are not installed.
-- **git** 2.56 and **GitHub CLI** `gh` 2.103 (winget). A new shell is needed for them to be on PATH. `.gitignore` excludes `Ander/`, `Data/`, all data, model and result file types, and the PDFs. The local `.git/hooks/pre-commit` refuses data paths and files over 5 MB, even with `git add -f`.
-- GPU: NVIDIA RTX 5080 with 16 GB, driver 610.88. It is a Blackwell card (sm_120), so PyTorch must be a CUDA 12.8+ build, such as the cu128 wheels.
-- CPU: i7-12700KF (12 cores, 20 threads). RAM: 32 GB.
-- Ander's environment, for compatibility: Python 3.13.5, pandas 3.0.1, numpy 2.4.2, pyarrow 23.0.1 and PyTorch 2.11.0+cu128. He ran on an RTX 4060 laptop (8 GB), where a full rolling run took about 6 minutes per model and seed.
+**Next step:** agree with Ander on the two decisions; then a validation run on `wrds_broad` (1996–1997), and Table 2 with the agreed specification on the WRDS-built arrays.
 
-## 7. Working rules
+**Results** (seed averages; μ and σ in % a year; turnover per day; every variant in `analysis\gap\RESULTS.md`, by period in `NOTES.md` §3):
 
-- **No look-ahead:** weights for day t use information up to t−1 only. This includes the scaling statistics (training window only) and every model choice: never pick one by looking at test-year results (1998 onward). We run no validation (§9); if a choice ever has to be revisited, compare on 1996–1997 only.
-- Results, tables and figures are produced by code. Each run fixes its seeds and saves its config next to its results.
-- Every choice the paper does not specify gets a row in §9 with its reason.
-- Code, docs and conversation are in English.
+| Run, 1998–2021 | SR | SR_net | μ / μ_net | σ | Beta | Turnover | Paper SR / SR_net |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| K = 1 | 2.24 | 1.05 | 16.50 / 7.75 | 7.35 | 0.14 | 0.62 | 3.05 / 1.68 |
+| K = 3 | 2.88 | 1.44 | 15.76 / 7.83 | 5.47 | 0.10 | 0.55 | 3.05 / 1.69 |
+| K = 5 | 3.08 | 1.35 | 14.92 / 6.52 | 4.84 | 0.08 | 0.58 | 2.92 / 1.58 |
+| K = 8 | 3.53 | 1.36 | 15.38 / 5.93 | 4.36 | 0.07 | 0.66 | 3.35 / 1.94 |
+| K = 15 | 3.65 | 1.20 | 14.39 / 4.70 | 3.95 | 0.05 | 0.67 | 3.81 / 2.25 |
+| K = 30 | 3.86 | 1.06 | 13.32 / 3.64 | 3.45 | 0.03 | 0.67 | 3.97 / 2.28 |
+| K = 100 | 3.73 | 0.39 | 10.45 / 1.10 | 2.80 | 0.02 | 0.64 | 4.52 / 2.19 |
+| K = 8, cumulative input | 2.94 | 1.51 | 13.09 / 6.71 | 4.45 | 0.08 | 0.41 | 3.35 / 1.94 |
+| K = 30, cumulative input | 3.37 | 1.26 | 11.21 / 4.18 | 3.33 | – | 0.46 | 3.97 / 2.28 |
+| K = 30, `wrds_broad --fill none` | 3.81 | 0.98 | 13.04 / 3.34 | 3.42 | 0.03 | 0.67 | 3.97 / 2.28 |
+| K = 30, `wrds_broad --fill none`, 2022–2025 | 1.08 | −0.43 | 3.85 / −1.55 | 3.58 | 0.06 | 0.34 | – |
+| K = 8, validation 1996–1997 | 10.91 | 7.19 | 32.29 / 21.26 | 2.96 | 0.06 | 0.78 | – |
+| K = 30, validation 1996–1997 | 11.67 | 7.31 | 29.03 / 18.16 | 2.49 | 0.04 | 0.76 | – |
+| K = 30, validation, `wrds_broad --fill none` | 11.37 | 7.00 | 27.82 / 17.11 | 2.45 | 0.04 | 0.75 | – |
 
-## 8. Status
+- **Validation** is `--train_years 6 --first-year 1996 --last-year 1997`, which uses nothing after 1997. Judge any change of §7 against it, never against test years.
+- **WRDS arrays, K = 30:** validation SR_net 0.31 below the baseline (seed sd 0.08–0.09), from gross return at the same turnover. On 1998–2021 they track Ander's arrays year by year: SR_net 0.98 against 1.06 (3.28 / −0.08 / −0.35 in 1998–2005 / 2006–2013 / 2014–2021, against 3.45 / −0.06 / −0.30). Three things differ at once: data source, fill rule, and loss days from 1990-01-02 instead of 1990-02-14.
+- **Extension 2022–2025 (K = 30, WRDS):** SR 1.08, SR_net −0.43, turnover 0.34; net return by year 0.7%, −0.3%, −2.3%, −4.5%. Equal-weighted market: SR 0.27.
+- **The gap** (`analysis\gap\REPORT.md`, Conclusions):
+    - Before costs K = 8 matches the paper, but we trade 0.55–0.67 a day against the paper's implied 0.42–0.47, so every net SR falls short. The paper's net SR rises with K up to 30; ours peaks at K = 3.
+    - No code error: an independent audit replayed saved models and matched the stored results.
+    - Cumulative input brings turnover to the paper's level, but gross return still falls short (§10).
+    - Models fit their window far better than they trade the next year (net SR 5–7 against 1.1–1.4), and more fitting means more trading. After 2005, K = 30 does not earn its costs.
 
-- [x] Data (Ander, 2026-10-13): universe 1990–2025 and the 39 characteristics, checked against Pelger's panel. 33 of the 35 monthly characteristics match his values in 98–100% of stock-months, and Resid_Var and Beta match in rank. X matrices have no look-ahead. The schemas in `Ander\data` were checked against his docs on 2026-11-12.
-- [ ] Get Ander's code and results. Ask for `src/`, `tests/`, `notebooks/`, `docs/implementation_decisions.md`, `docs/paper_targets.md`, `requirements.txt` and `results/runs/`.
-    - His `CLAUDE.md` says the models, the training, the Table 2 and 3 runs and the 2022–2025 extension exist on his machine (2026-11-12).
-    - But it records no numbers, its "differences with the paper" section is an unfilled placeholder, and its run listing shows some runs still in progress.
-- [x] Environment (2026-11-12): Python 3.13 venv with PyTorch cu128 and the data/test stack (§6). Local git repo (`main`) with a data-excluding `.gitignore` and a pre-commit guard.
-- [ ] GitHub remote: waiting for `gh auth login`, the repo name and its visibility (private recommended); then the first commit and push.
-- [ ] Panel loader: X window + excess returns + membership mask → day × stock tensors (training window, test year, 30-day lookback).
-- [ ] Model, with unit tests: attention factors (softmax masked to the day's universe), ridge loadings, residuals, LongConv, weights, costs and objective.
-- [ ] Rolling out-of-sample 1998–2021: K = 8 and 30 first (3 seeds), then 1, 3, 5, 15 and 100.
-- [ ] Metrics and comparison with Table 2, including turnover and short exposure.
-- [ ] Afterwards: Table 3, Figures 2–4, PCA + LongConv, the 2022–2025 extension, the report notebook and the Phase II and III presentations.
+## 10. Open questions
 
-**Next step:** authenticate `gh` and push the repo; ask Ander for his code and results.
-
-## 9. Decision log
-
-| Date | Decision | Reason |
-| --- | --- | --- |
-| 2026-11-12 | No validation step. The paper tunes on 1990–95 / 1996–97; we do not. The first window is fitted once on 1990–1997 | Table 4 gives every hyperparameter, and Ander already settled the choices the paper leaves open. Re-running the search would add nothing for a reproduction |
-| 2026-11-12 | Adopt Ander's open choices as listed in §4: annualized Sharpe in the objective, batches of 126 consecutive days, λ_ridge = 1e-5, his LongConv block, daily residuals in %, each day's own projection for lagged residuals, ω^port = 0 under 30 days in the universe, per-stock excess returns, medians and rf standardized on the training window, turnover paid at the year boundary, 3 seeds | His log records validation on 1990–95 / 1996–97 for the Sharpe scale, batching, λ_ridge and residual input, and arguments for the rest. Caveats: the lagged-residual projection is inferred from his docs, and his case for excess returns cites the paper's EW-market row (a 1998–2021 number, though not a strategy result). Check both against his code |
-
-## 10. Results
-
-| Run | Period | SR | SR_net | Paper (SR / net) | File |
-| --- | --- | --- | --- | --- | --- |
-
-_None yet._
-
-## 11. Open questions
-
+- **Ander's code and results.** Ask for `src/`, `tests/`, `docs/implementation_decisions.md`, `notebooks/attention_factors_results.ipynb` and `results/runs/`. His `CLAUDE.md` §6 marks Tables 2–3, PCA + OU, PCA + LongConv and the extension as done, but records no Sharpe ratios. Compare his choices with §7, above all batching, initialization and explained variance.
+- **Sequence-model input (pending).**
+    - Cumulative residuals reproduce the paper's turnover and are what the predecessor paper states.
+    - The validation years prefer raw residuals (SR_net 7.19 against 6.32 for K = 8; 7.31 against 6.68 for K = 30), because 1996–1997 rewards speed.
+    - `analysis\gap\REPORT.md` §6 recommends cumulative as the main specification, raw beside it.
+    - Cumulative has not been run for K = 1, 3, 5, 15, 100 or for Table 3.
+- **Gross return at the paper's turnover:** 13.1% against 15.7% (K = 8), and 11.2% against 16.7% (K = 30). The paper's edge comes in 1998–2007, and it gains from more factors where we do not. Unexplained; the universe is the main suspect.
+- **Universe.** About a third of the paper's named stocks are not in ours, so expect gaps that no code fix closes.
+    - `REPORT.md` §6 keeps the monthly top 500 as the main universe, with fixed-per-window as a robustness check.
+    - `window` reproduces the paper's weak returns after 2013, but not its strong early years.
+    - The companion code fixes 500 stocks for 10 years by company market cap, and needs complete data through the year after the reported one (`NOTES.md` §4).
 - **For the professor:** the code or results of the earlier AFSA replication, and which universe it used.
-- **Universe.** The paper's exact universe cannot be rebuilt (§3), so expect gaps against Table 2 that no code fix will close.
-- **Outlier filter for the extension.** Addentax (ATXG) entered the top 500 in September 2022 after a post-IPO surge and lost 95% on its first day in the universe. Decide whether to add a price or liquidity filter; the paper has none.
-- **Medians.** If the medians are inert under eq. (1), did the authors' code differ from the paper (e.g. a nonlinear embedding)? Ander's results may help tell.
-- **Phase II date** (Lecture 22): confirm it.
+- **Missing raw inputs inside a characteristic.** Decided for the WRDS build (§7): 15 items the panel confirms count as 0; XSGA, DP, COGS, CEQ and LCT do not. Still for Prof. Polak and the user: read literally, the §4 policy would also empty the 15 (`build --strict`: CF 99.96% empty, OP 95%, FC2Y 77%). CEQ and LCT are a judgement: the panel does fill them, on 4 and 3 securities.
+- **Weekly characteristics (user's call).** Built by the paper's words. The companion code uses days t−8..t−2 for the weekly return and volatility and one day's volume; the daily rank correlation between the two versions is 0.62 (Ret_W1), 0.77 (STD_W1) and 0.95 (Vol). If the paper's numbers came from that code, these inputs differ materially.
+- **20-F on the deadline day.** A foreign filer's December year-end enters in July, formed on the last trading day of June, the old 20-F deadline itself: 1,111 universe stock-months (0.51%) rely on the issuer having filed by then. A 7-month lag would close it (`min_lag_months_foreign`).
+- **`Config.fill` defaults to `last`,** so runs on the wrds folders need `--fill none` (see §3 before changing a default).
+- **Medians.** They are inert under eq. (1). Did the authors' code differ, say with a nonlinear embedding? The companion config gives a hint (`NOTES.md` §4).
+- **Exchanges in the universe.** The paper says only "securities on CRSP". The NYSE/AMEX/NASDAQ filter (Ander's) excludes only Cboe Global Markets, 39 months in 2018–2025. Keep the filter unless the professor says otherwise.
+- **Outlier filter for the extension.** Addentax (ATXG) entered the top 500 in September 2022 after a post-IPO surge, and lost 95% on its first day there. The paper has no price or liquidity filter.

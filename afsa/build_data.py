@@ -3,6 +3,11 @@
     python -m afsa.build_data                 # check the sources, build the arrays, verify them against the sources
     python -m afsa.build_data --check-only    # run the checks only; nothing is written
     python -m afsa.build_data --universe common
+    python -m afsa.build_data --fill none     # missing characteristics left at rank 0, no carry-forward -> broad_fill-none
+
+With --fill last (the default) the inputs are Ander's X file as is. With --fill none they are rebuilt from his raw
+characteristics by afsa.build_window.slot_inputs, after checking that the same recipe with --fill last reproduces
+his X on every stock-day.
 
 The arrays are a dense day x slot panel: on each trading day the universe's stocks, sorted by PERMNO, fill the
 first N <= 500 slots. Everything the model needs is here, so training never touches the parquet files.
@@ -31,7 +36,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from .config import CHARACTERISTICS, LEVEL_NAMES, N_CHAR, N_LEVEL, N_SLOTS, SOURCE_DIR, TRAIN_DATA_DIR, UNIVERSES
+from .config import CHARACTERISTICS, FILLS, LEVEL_NAMES, N_CHAR, N_LEVEL, N_SLOTS, SOURCE_DIR, TRAIN_DATA_DIR, UNIVERSES, data_folder
 from .panel import membership
 
 EXPECTED_FIRST_DAY = np.datetime64("1990-01-02")
@@ -58,7 +63,7 @@ class Checks:
         return [c["check"] for c in self.items if c["ok"] is False]
 
 
-def build(universe: str = "broad", check_only: bool = False) -> bool:
+def build(universe: str = "broad", check_only: bool = False, fill: str = "last") -> bool:
     t0 = time.time()
     xfile, flag = UNIVERSES[universe]
     xpath, cpath, fpath = SOURCE_DIR / xfile, SOURCE_DIR / "crsp_daily.parquet", SOURCE_DIR / "factors_daily.parquet"
@@ -191,6 +196,27 @@ def build(universe: str = "broad", check_only: bool = False) -> bool:
     days_per_year = {int(y): int(c) for y, c in zip(*np.unique(yr, return_counts=True))}
     ck.note("trading days in the first training window (1990-1997)", f"{sum(days_per_year[y] for y in range(1990, 1998)):,}; first day with 31 prior days: {dates[31]}")
 
+    # ---------------------------------------------------------------- inputs rebuilt with another fill rule
+    if fill != "last":
+        from .build_window import load_sources, slot_inputs
+        member = permno >= 0
+        r_last, lv_last, miss_last = slot_inputs(load_sources("last"), dates, permno)
+        off = np.abs(r_last - ranks)[member] > 1e-4
+        rel = np.abs(lv_last[:, :N_CHAR] - levels[:, :N_CHAR]) / np.maximum(np.abs(levels[:, :N_CHAR]), 1e-12)
+        ck.add("the rebuild recipe with fill=last reproduces X on every stock-day", off.mean() < 0.002 and (rel > 1e-5).mean() < 0.002,
+               f"ranks off by more than 1e-4 in {off.mean():.4%} of entries, medians off by more than 1e-5 in {(rel > 1e-5).mean():.4%}")
+        del r_last, lv_last
+        r_new, lv_new, miss_new = slot_inputs(load_sources(fill), dates, permno)
+        ck.add(f"fill={fill} inputs: no NaN, ranks in [-0.5, 0.5], rf unchanged",
+               bool(np.isfinite(r_new).all() and np.abs(r_new).max() <= 0.5 and np.array_equal(lv_new[:, -1], levels[:, -1])))
+        changed = np.abs(r_new - ranks)[member] > 1e-4
+        ck.note(f"fill={fill}: stock-days whose rank changes against X", f"{changed.mean():.3%} of all entries")
+        worst = sorted(zip(CHARACTERISTICS, miss_last, miss_new), key=lambda t: -t[2])
+        ck.note(f"fill={fill}: stock-days without a value (rank 0), fill=last -> fill={fill}",
+                "; ".join(f"{c} {a / n_rows:.2%} -> {b / n_rows:.2%}" for c, a, b in worst if b > a or b / n_rows > 0.005))
+        ranks, levels = r_new, lv_new
+        del r_new, lv_new
+
     print(f"Checks finished in {time.time() - t0:.0f} s: {len(ck.failed)} failed.")
     if ck.failed:
         print("FAILED:", "; ".join(ck.failed))
@@ -199,7 +225,7 @@ def build(universe: str = "broad", check_only: bool = False) -> bool:
         return True
 
     # ---------------------------------------------------------------- write
-    out = TRAIN_DATA_DIR / universe
+    out = TRAIN_DATA_DIR / data_folder(universe, fill)
     out.mkdir(parents=True, exist_ok=True)
     arrays = {"dates": dates, "permnos": permnos, "permno": permno, "slot_of": slot_of, "ranks": ranks, "levels": levels,
               "ret": ret, "rf": rf, "run": run}
@@ -208,6 +234,7 @@ def build(universe: str = "broad", check_only: bool = False) -> bool:
     nan_list = [[str(d), int(p)] for d, p in zip(xdate[nan_ret], xperm[nan_ret])]
     meta = {
         "universe": universe,
+        "fill": fill,
         "built": datetime.now().isoformat(timespec="seconds"),
         "sources": {p.name: {"bytes": p.stat().st_size, "modified": datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds")}
                     for p in (xpath, cpath, fpath)},
@@ -223,15 +250,16 @@ def build(universe: str = "broad", check_only: bool = False) -> bool:
     size = sum(f.stat().st_size for f in out.iterdir())
     print(f"Wrote {len(arrays)} arrays + meta.json to {out} ({size / 2**20:.0f} MB).")
 
-    ok = verify(universe)
+    ok = verify(universe, fill=fill)
     print(f"Done in {time.time() - t0:.0f} s.")
     return ok
 
 
-def verify(universe: str = "broad", n_sample: int = 200_000, seed: int = 0) -> bool:
-    """Re-reads the written arrays and compares a random sample of stock-days with the parquet sources."""
+def verify(universe: str = "broad", n_sample: int = 200_000, seed: int = 0, fill: str = "last") -> bool:
+    """Re-reads the written arrays and compares a random sample of stock-days with the parquet sources.
+    With a rebuilt fill rule the inputs differ from X by design, so only the stock-days and returns are compared."""
     xfile, flag = UNIVERSES[universe]
-    out = TRAIN_DATA_DIR / universe
+    out = TRAIN_DATA_DIR / data_folder(universe, fill)
     a = {f.stem: np.load(f, mmap_mode="r") for f in out.glob("*.npy")}
     rng = np.random.default_rng(seed)
     pf = pq.ParquetFile(SOURCE_DIR / xfile)
@@ -246,15 +274,17 @@ def verify(universe: str = "broad", n_sample: int = 200_000, seed: int = 0) -> b
         slot = np.asarray(a["slot_of"])[t, s].astype(np.int64)
         if (slot < 0).any() or not np.array_equal(np.asarray(a["permno"])[t, slot], df["permno"].to_numpy()):
             print("  [FAIL] verification: a sampled stock-day is missing from the arrays"); return False
-        worst = max(worst, float(np.abs(np.asarray(a["ranks"])[t, slot] - df[list(CHARACTERISTICS)].to_numpy()).max()),
-                    float(np.abs(np.asarray(a["levels"])[t] - df[list(LEVEL_NAMES)].to_numpy()).max()))
+        if fill == "last":
+            worst = max(worst, float(np.abs(np.asarray(a["ranks"])[t, slot] - df[list(CHARACTERISTICS)].to_numpy()).max()),
+                        float(np.abs(np.asarray(a["levels"])[t] - df[list(LEVEL_NAMES)].to_numpy()).max()))
         r = pd.read_parquet(SOURCE_DIR / "crsp_daily.parquet", columns=["permno", "date", "ret"],
                             filters=[(flag, "==", True), ("date", ">=", df["date"].min()), ("date", "<=", df["date"].max())])
         m = df[["date", "permno"]].merge(r, on=["date", "permno"], how="left", validate="one_to_one")
         worst = max(worst, float(np.abs(np.asarray(a["ret"])[t, slot] - m["ret"].fillna(0.0).to_numpy(dtype=np.float32)).max()))
         n_checked += len(df)
     ok = worst == 0.0
-    print(f"  [{'PASS' if ok else 'FAIL'}] verification: {n_checked:,} sampled stock-days re-read from the parquet files match the arrays "
+    what = "match the arrays" if fill == "last" else "match the arrays' stock-days and returns"
+    print(f"  [{'PASS' if ok else 'FAIL'}] verification: {n_checked:,} sampled stock-days re-read from the parquet files {what} "
           f"(largest difference {worst:g})")
     return ok
 
@@ -263,8 +293,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--universe", default="broad", choices=list(UNIVERSES))
     p.add_argument("--check-only", action="store_true", help="run the checks without writing anything")
+    p.add_argument("--fill", default="last", choices=FILLS,
+                   help="missing characteristics: last = Ander's X as is (last observed value), none = rebuilt, left at rank 0 [default: last]")
     args = p.parse_args()
-    sys.exit(0 if build(args.universe, args.check_only) else 1)
+    sys.exit(0 if build(args.universe, args.check_only, args.fill) else 1)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,14 @@
 """Estimation: batches of consecutive days, the training loop for M models at once, and out-of-sample evaluation."""
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
 import torch
 
-from .config import Config
+from .config import N_CHAR, Config
 from .model import AFSAModel, explained_variance
 from .panel import Panel
 
@@ -22,17 +23,25 @@ class Task:
 
 
 def streams(task: Task) -> tuple[int, int, int]:
-    """Independent seeds for a task's initialisation, batch order and dropout. They depend on the task only, so a
+    """Independent seeds for a task's initialization, batch order and dropout. They depend on the task only, so a
     model is trained the same way whichever other models share its batch."""
     return tuple(int(s) for s in np.random.SeedSequence([task.seed, task.test_year]).generate_state(3))
 
 
 def train_span(cfg: Config, panel: Panel, task: Task) -> tuple[int, int]:
-    """Loss days [start, stop) of a task. Each needs lookback + 1 earlier days, which only binds at the sample start."""
+    """Loss days [start, stop) of a task. Each needs lookback + 1 earlier days, which only binds at the sample start.
+
+    The sample must hold every training year from its first trading day. A sample that starts inside the first
+    training year is accepted only if it starts in the first week of January (no year's first trading day is later
+    than 4 January). The arrays of afsa.build_wrds start on 1989-11-01 to give the first loss day, 1990-01-02, its
+    lookback: those 41 days of 1989 are not a training year."""
     first_year = task.test_year - cfg.train_years
     start, stop = panel.year_span(first_year, task.test_year - 1)
     if stop - start < cfg.batch_days or panel.years[start] != first_year or panel.years[stop - 1] != task.test_year - 1:
         raise ValueError(f"the sample does not cover the {cfg.train_years} years before {task.test_year}")
+    if start == 0 and panel.dates[0] > np.datetime64(f"{first_year}-01-07"):
+        raise ValueError(f"the sample does not cover the {cfg.train_years} years before {task.test_year}: "
+                         f"it starts on {panel.dates[0]}, inside {first_year}")
     start = max(start, cfg.lookback + 1)
     if not panel.has_days(start - cfg.lookback - 1, stop):
         raise ValueError(f"the panel in memory does not hold the training days of test year {task.test_year}")
@@ -61,13 +70,16 @@ def fit(cfg: Config, panel: Panel, tasks: list[Task], progress: Callable[[int, n
     seeds = [streams(t) for t in tasks]
     model = AFSAModel(cfg, [s[0] for s in seeds], device, dtype)
 
-    # The medians and rf are standardised with the statistics of each model's own training window.
+    # The medians and rf are standardized with the statistics of each model's own training window.
     lev = panel.levels.double()
     stat = [(lev[a - panel.offset:b - panel.offset].mean(0), lev[a - panel.offset:b - panel.offset].std(0, correction=0))
             for a, b in (panel.year_span(t.test_year - cfg.train_years, t.test_year - 1) for t in tasks)]
     model.set_level_stats(torch.stack([s[0] for s in stat]), torch.stack([s[1] for s in stat]))
 
     opt = torch.optim.AdamW(model.param_groups(cfg.weight_decay), lr=cfg.lr, fused=device.type == "cuda")
+    schedule = None
+    if cfg.lr_schedule == "cosine":                                          # one half-cosine from lr to 0 over all the steps
+        schedule = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg.epochs * cfg.steps_per_epoch)
     rngs = [np.random.default_rng(s[1]) for s in seeds]
     gens = [torch.Generator(device=device).manual_seed(s[2]) for s in seeds]
     offsets = torch.arange(-(L + 1), B, device=device)                      # lookback rows, the row before, the loss rows
@@ -82,21 +94,27 @@ def fit(cfg: Config, panel: Panel, tasks: list[Task], progress: Callable[[int, n
             opt.zero_grad(set_to_none=True)
             (-objective.sum()).backward()                                    # the models share no parameter
             opt.step()
+            if schedule is not None:
+                schedule.step()
             acc += torch.stack([parts[k].detach() for k in STATS], dim=1)
         history[epoch] = (acc / starts.shape[1]).cpu().numpy()
         if progress is not None:
             progress(epoch, history[epoch])
+    for task, last in zip(tasks, history[-1]):
+        if not np.isfinite(last).all():                                      # the other models of the batch are unaffected
+            warnings.warn(f"training diverged for test year {task.test_year}, seed {task.seed}: its results are not finite")
     return model.eval(), history
 
 
 @torch.no_grad()
 def evaluate(cfg: Config, panel: Panel, model: AFSAModel, tasks: list[Task], keep_weights: bool = False,
-             max_cells: float = 4e8) -> list[dict]:
+             max_bytes: float = 1e9) -> list[dict]:
     """Out-of-sample results of each model on its test year. One dict per task with the daily gross return,
     turnover and short exposure, and the weights needed to join consecutive years.
 
     turnover[0] is measured against the weights the same model would have held the day before; `metrics.stitch`
-    replaces it with the trade from the previous year's model.
+    replaces it with the trade from the previous year's model. The models are evaluated a few at a time so that
+    the pass stays within `max_bytes` of memory.
     """
     L, device = cfg.lookback, panel.device
     spans = [panel.year_span(t.test_year, t.test_year) for t in tasks]
@@ -104,8 +122,11 @@ def evaluate(cfg: Config, panel: Panel, model: AFSAModel, tasks: list[Task], kee
         if e <= s or not panel.has_days(s - L - 1, e):
             raise ValueError(f"the panel in memory does not hold test year {t.test_year}")
     D = max(e - s for s, e in spans)
-    per_model = (L + 1 + D) * 800 * max(cfg.K, cfg.d_model)                  # rough size of the largest tensor
-    step = max(1, int(max_cells // per_model))
+    seq = 4 * cfg.d_model * (L if cfg.n_layers > 1 else 1)
+    per_model = (L + 1 + D) * 800 * (N_CHAR + 3 * cfg.K + seq) * 4            # rough bytes of one model's pass
+    step = max(1, int(max_bytes // per_model))
+    if device.type == "cuda":
+        torch.cuda.empty_cache()                                             # hand back what training had cached
     results: list[dict] = []
     for lo in range(0, len(tasks), step):
         idx = list(range(lo, min(lo + step, len(tasks))))

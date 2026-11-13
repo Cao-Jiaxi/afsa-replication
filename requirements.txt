@@ -10,3 +10,6 @@ scipy
 matplotlib
 jupyter
 pytest==9.2.0
+psutil          # tests/hardware only
+psycopg2-binary>=2.9,<2.10   # afsa/wrds_db.py (not the `wrds` package: it pins pandas < 2.3)
+sqlalchemy>=2,<2.1

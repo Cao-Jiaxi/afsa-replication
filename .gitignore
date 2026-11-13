@@ -20,6 +20,8 @@ runs/
 *.zip
 *.sas7bdat
 *.dta
+# Third-party code with unknown licence; its stock-name and sector files derive from CRSP
+companionpaper/
 
 # Copyrighted papers and course material
 *.pdf
@@ -39,3 +41,6 @@ __pycache__/
 .claude/
 Thumbs.db
 desktop.ini
+
+# Copy for the instructor's review: holds CRSP/Compustat-derived data, never commit
+JiaxiCaoShare/

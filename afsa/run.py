@@ -19,26 +19,38 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .config import RESULTS_DIR, Config
+from .config import RESULTS_DIR, WINDOW_RULES, Config, data_folder
 from .metrics import compare_with_paper, summarize
 from .panel import Panel
 from .train import STATS, Task, evaluate, fit
 
 
+def window_folder(cfg: Config, year: int) -> str:
+    """Folder (under Data/TrainingData) of the universe that is fixed for the window of test year `year`."""
+    return f"{data_folder(cfg.universe, cfg.fill)}/{cfg.train_years}y/{year}"
+
+
 def default_max_models(cfg: Config, device: torch.device) -> int:
-    """How many models fit in one training pass: free GPU memory over the measured footprint of one model
-    (tests/hardware/REPORT.md). On the CPU there is no gain from batching beyond a few models."""
+    """How many models to train in one pass, from the measurements in tests/hardware/REPORT.md.
+
+    One model reserves about 165 + 2.1 K MB of GPU memory during training (d_model = 32, batches of 126 days).
+    Beyond 36 models the GPU is saturated and larger batches no longer train faster.
+    """
     if device.type != "cuda":
         return 4
     free, _ = torch.cuda.mem_get_info(device)
-    per_model = 30e6 + 6.5e6 * max(cfg.K, 8) * cfg.batch_days / 126           # bytes, with a safety margin
-    if cfg.n_layers > 1:
-        per_model += 1.6e9 * cfg.n_layers * cfg.d_model / 32 * cfg.batch_days / 126
-    return int(max(1, min(96, 0.8 * free // per_model)))
+    days = (cfg.batch_days + cfg.lookback + 1) / 157
+    per_model = (165e6 * cfg.d_model / 32 + 2.1e6 * cfg.K) * days
+    if cfg.n_layers > 1:                                                      # whole [.., lookback, d_model] sequences are kept
+        per_model += 130e6 * cfg.lookback * (cfg.n_layers - 1) * cfg.d_model / 32 * days
+    return int(max(1, min(36, 0.8 * free // per_model)))
 
 
-def run_config(cfg: Config, seeds: list[int], years: list[int], panel: Panel, max_models: int | None = None,
-               tag: str = "", save_weights: bool = False, verbose: bool = True) -> Path:
+def run_config(cfg: Config, seeds: list[int], years: list[int], panel: Panel | None, max_models: int | None = None,
+               tag: str = "", save_weights: bool = False, verbose: bool = True, device: str = "cuda") -> Path:
+    """Trains and evaluates the missing (test year, seed) pairs of one configuration. `panel` holds the whole
+    sample of cfg.universe; for a universe that is fixed per training window it is None, and each test year
+    loads its own panel on `device` and trains its seeds in one pass."""
     run_dir = RESULTS_DIR / "runs" / (cfg.name() + (f"_{tag}" if tag else ""))
     run_dir.mkdir(parents=True, exist_ok=True)
     if (run_dir / "config.json").exists():
@@ -47,12 +59,20 @@ def run_config(cfg: Config, seeds: list[int], years: list[int], panel: Panel, ma
     else:
         cfg.save(run_dir / "config.json")
     todo = [Task(y, s) for s in seeds for y in years if not (run_dir / f"seed{s}" / f"{y}.npz").exists()]
-    max_models = max_models or default_max_models(cfg, panel.device)
+    per_window = cfg.universe in WINDOW_RULES
+    max_models = max_models or default_max_models(cfg, torch.device(device) if per_window else panel.device)
+    if per_window:
+        chunks = [c for c in ([t for t in todo if t.test_year == y] for y in years) if c]
+    else:
+        chunks = [todo[lo:lo + max_models] for lo in range(0, len(todo), max_models)]
     if verbose:
-        print(f"{run_dir.name}: {len(todo)} of {len(seeds) * len(years)} models to train, {max_models} at a time", flush=True)
-    for lo in range(0, len(todo), max_models):
-        chunk = todo[lo:lo + max_models]
+        how = "one test year at a time" if per_window else f"{max_models} at a time"
+        print(f"{run_dir.name}: {len(todo)} of {len(seeds) * len(years)} models to train, {how}", flush=True)
+    done = 0
+    for chunk in chunks:
         t0 = time.time()
+        if per_window:
+            panel = Panel(window_folder(cfg, chunk[0].test_year), device)
         model, history = fit(cfg, panel, chunk)
         results = evaluate(cfg, panel, model, chunk, keep_weights=save_weights)
         for m, (task, res) in enumerate(zip(chunk, results)):
@@ -62,12 +82,15 @@ def run_config(cfg: Config, seeds: list[int], years: list[int], panel: Panel, ma
             arrays = {k: v for k, v in res.items() if isinstance(v, np.ndarray)}
             np.savez(folder / f"{task.test_year}.npz", history=history[:, m], history_columns=np.array(STATS),
                      explained_var=res["explained_var"], **arrays)                      # written last: marks the task as done
-        if verbose:
+        done += len(chunk)
+        if verbose and (not per_window or done == len(todo) or chunk[0].test_year % 6 == 0):
             last = history[-1].mean(0)
-            print(f"  {lo + len(chunk):4d}/{len(todo)} models  {time.time() - t0:6.1f} s  "
+            print(f"  {done:4d}/{len(todo)} models  {time.time() - t0:6.1f} s  "
                   f"last epoch (in-sample, batch mean): net Sharpe {last[1]:.2f}, explained variance {last[3]:.3f}, turnover {last[4]:.2f}",
                   flush=True)
-        del model
+        del model, results
+        if panel.device.type == "cuda":
+            torch.cuda.empty_cache()                                         # so the next pass starts from the same memory
     return run_dir
 
 
@@ -88,15 +111,19 @@ def main() -> None:
     panel = None
     for K in args.K:
         cfg = Config.from_args(args, K=K)
-        if panel is None or panel.universe != cfg.universe:
-            panel = Panel(cfg.universe, args.device)
+        if cfg.universe in WINDOW_RULES:
+            panel = None                                                     # one panel per test year, loaded by run_config
+        elif panel is None or panel.universe != data_folder(cfg.universe, cfg.fill):
+            panel = Panel(data_folder(cfg.universe, cfg.fill), args.device)
         t0 = time.time()
-        run_dir = run_config(cfg, args.seeds, years, panel, args.max_models, args.tag, args.save_weights)
+        run_dir = run_config(cfg, args.seeds, years, panel, args.max_models, args.tag, args.save_weights, device=args.device)
         table = summarize(run_dir, args.first_year, args.last_year)
         print(f"\n{run_dir.name}: test years {args.first_year}-{args.last_year}, {time.time() - t0:.0f} s")
         print(table.drop(columns=["first", "last"]).astype(float).round(3).to_string())
-        print("\nSeed average against the paper's Table 2 (1998-2021):")
-        print(compare_with_paper(table, K), "\n", flush=True)
+        if (args.first_year, args.last_year) == (1998, 2021):               # the paper's out-of-sample period
+            print("\nSeed average against the paper's Table 2 (1998-2021):")
+            print(compare_with_paper(table, K))
+        print(flush=True)
 
 
 if __name__ == "__main__":
