@@ -111,6 +111,22 @@ def test_no_signal_without_a_full_lookback_in_the_universe(cfg, arrays, panel):
     assert (out["w"][0][batch.member[0, L:] & ~batch.valid[0, L:]] != 0).any()
 
 
+def test_entry_rule_member_gives_every_member_a_signal(cfg, panel):
+    """entry_rule = "member": a stock has a signal from its first day in the universe; its lags from before are zero
+    residuals. Everything else is as under the default rule."""
+    _, batch, old = run(cfg, panel, first=20, n_days=60)
+    _, _, new = run(Config(**{**cfg.to_dict(), "entry_rule": "member"}), panel, first=20, n_days=60)
+    L = cfg.lookback
+    member, valid = batch.member[:, L:], batch.valid[:, L:]
+    fresh = member & ~valid
+    assert fresh.sum() > 20 and (old["w_port"][fresh] == 0).all() and (new["w_port"][fresh] != 0).all()
+    assert torch.equal(new["w_port"][valid], old["w_port"][valid]) and (new["w_port"][~member] == 0).all()
+    assert torch.equal(new["eps"], old["eps"]) and (new["eps"][~batch.member] == 0).all()
+    assert not torch.allclose(new["w"], old["w"])
+    with pytest.raises(ValueError):
+        Config(entry_rule="always")
+
+
 def test_weights_use_no_information_from_the_same_or_later_days(cfg, arrays):
     """Changing returns from day t0 on, and characteristics after t0, must leave the weights up to t0 unchanged."""
     first, n_days, t0 = 20, 40, 45

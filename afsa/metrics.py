@@ -22,15 +22,26 @@ PAPER_TABLE2 = {
 }
 
 
-def market_returns(universe: str = "broad", train_years: int = 8, fill: str = "last") -> pd.Series:
+# The paper's costs: per unit of turnover and per unit of short exposure per day. Every run is scored with them,
+# whatever costs it was trained with (Config.cost_trade and cost_short belong to the training objective).
+COST_TRADE, COST_SHORT = 5e-4, 1e-4
+
+
+def market_returns(universe: str = "broad", train_years: int = 8, fill: str = "last", log: bool = False) -> pd.Series:
     """Equal-weighted excess return of the universe, by day (the paper's market row), from the arrays the run trained
     on (config.data_folder: the `wrds_*` universes exist only with a fill suffix).
 
+    `log` gives the log excess return of the same portfolio, log(1 + R) - log(1 + rf) with R its simple return. Every
+    beta uses the simple return (the default).
     For a universe that is fixed per training window, each test year contributes the days of its own list."""
     def one(folder: Path) -> pd.Series:
         member = np.load(folder / "permno.npy") >= 0
-        ex = np.where(member, np.load(folder / "ret.npy") - np.load(folder / "rf.npy")[:, None], 0.0)
-        return pd.Series(ex.sum(1) / np.maximum(member.sum(1), 1), index=pd.DatetimeIndex(np.load(folder / "dates.npy")), name="market")
+        ret, rf, n = np.load(folder / "ret.npy"), np.load(folder / "rf.npy"), np.maximum(member.sum(1), 1)
+        if log:
+            ex = np.log1p(np.where(member, ret, 0.0).sum(1) / n) - np.log1p(rf.astype(np.float64))
+        else:
+            ex = np.where(member, ret - rf[:, None], 0.0).sum(1) / n
+        return pd.Series(ex, index=pd.DatetimeIndex(np.load(folder / "dates.npy")), name="market")
 
     root = TRAIN_DATA_DIR / data_folder(universe, fill)
     if universe not in WINDOW_RULES:
@@ -42,8 +53,8 @@ def market_returns(universe: str = "broad", train_years: int = 8, fill: str = "l
     return pd.concat(parts).rename("market")
 
 
-def stitch(seed_dir: Path, cfg: Config) -> pd.DataFrame:
-    """Daily results of one seed over all its test years.
+def stitch(seed_dir: Path) -> pd.DataFrame:
+    """Daily results of one seed over all its test years, net of the paper's costs (COST_TRADE, COST_SHORT).
 
     On the first day of each year the portfolio moves from the previous year's model to the new one, and pays
     that turnover; the very first day is bought from cash.
@@ -62,7 +73,7 @@ def stitch(seed_dir: Path, cfg: Config) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame(columns=["gross", "turnover", "short", "cost", "net"])
     daily = pd.concat(frames)
-    daily["cost"] = cfg.cost_trade * daily["turnover"] + cfg.cost_short * daily["short"]
+    daily["cost"] = COST_TRADE * daily["turnover"] + COST_SHORT * daily["short"]
     daily["net"] = daily["gross"] - daily["cost"]
     daily.index.name = "date"
     return daily
@@ -92,7 +103,7 @@ def summarize(run_dir: Path, first_year: int | None = None, last_year: int | Non
     market = market_returns(cfg.universe, cfg.train_years, cfg.fill)
     rows = {}
     for seed_dir in sorted(run_dir.glob("seed*"), key=lambda p: int(p.name[4:])):
-        daily = stitch(seed_dir, cfg)
+        daily = stitch(seed_dir)
         if first_year is not None:
             daily = daily[daily.index.year >= first_year]
         if last_year is not None:

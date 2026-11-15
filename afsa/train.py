@@ -1,4 +1,8 @@
-"""Estimation: batches of consecutive days, the training loop for M models at once, and out-of-sample evaluation."""
+"""Estimation: batches of consecutive days, the training loop for M models at once, and out-of-sample evaluation.
+
+Every function takes either sample: a `Panel` (day x slot arrays) or a `BlockPanel` (month blocks, entry_rule
+history). Both index days by their position in the calendar and serve the same batches of days.
+"""
 from __future__ import annotations
 
 import warnings
@@ -8,9 +12,9 @@ from typing import Callable
 import numpy as np
 import torch
 
-from .config import N_CHAR, Config
+from .config import Config
 from .model import AFSAModel, explained_variance
-from .panel import Panel
+from .panel import BlockPanel, Panel
 
 STATS = ("objective", "sharpe_net", "sharpe_gross", "explained_var", "turnover", "short")
 
@@ -28,7 +32,7 @@ def streams(task: Task) -> tuple[int, int, int]:
     return tuple(int(s) for s in np.random.SeedSequence([task.seed, task.test_year]).generate_state(3))
 
 
-def train_span(cfg: Config, panel: Panel, task: Task) -> tuple[int, int]:
+def train_span(cfg: Config, panel: Panel | BlockPanel, task: Task) -> tuple[int, int]:
     """Loss days [start, stop) of a task. Each needs lookback + 1 earlier days, which only binds at the sample start.
 
     The sample must hold every training year from its first trading day. A sample that starts inside the first
@@ -43,7 +47,7 @@ def train_span(cfg: Config, panel: Panel, task: Task) -> tuple[int, int]:
         raise ValueError(f"the sample does not cover the {cfg.train_years} years before {task.test_year}: "
                          f"it starts on {panel.dates[0]}, inside {first_year}")
     start = max(start, cfg.lookback + 1)
-    if not panel.has_days(start - cfg.lookback - 1, stop):
+    if not panel.covers(start - 1, stop, cfg.lookback):                       # the day before the first loss day too
         raise ValueError(f"the panel in memory does not hold the training days of test year {task.test_year}")
     return start, stop
 
@@ -61,7 +65,7 @@ def batch_starts(rng: np.random.Generator, start: int, stop: int, cfg: Config) -
     return rng.permutation(first)
 
 
-def fit(cfg: Config, panel: Panel, tasks: list[Task], progress: Callable[[int, np.ndarray], None] | None = None,
+def fit(cfg: Config, panel: Panel | BlockPanel, tasks: list[Task], progress: Callable[[int, np.ndarray], None] | None = None,
         dtype: torch.dtype = torch.float32) -> tuple[AFSAModel, np.ndarray]:
     """Trains one model per task, all in the same passes. Returns the models and the training history
     [epochs, M, len(STATS)] (epoch averages over batches)."""
@@ -107,7 +111,7 @@ def fit(cfg: Config, panel: Panel, tasks: list[Task], progress: Callable[[int, n
 
 
 @torch.no_grad()
-def evaluate(cfg: Config, panel: Panel, model: AFSAModel, tasks: list[Task], keep_weights: bool = False,
+def evaluate(cfg: Config, panel: Panel | BlockPanel, model: AFSAModel, tasks: list[Task], keep_weights: bool = False,
              max_bytes: float = 1e9) -> list[dict]:
     """Out-of-sample results of each model on its test year. One dict per task with the daily gross return,
     turnover and short exposure, and the weights needed to join consecutive years.
@@ -119,12 +123,10 @@ def evaluate(cfg: Config, panel: Panel, model: AFSAModel, tasks: list[Task], kee
     L, device = cfg.lookback, panel.device
     spans = [panel.year_span(t.test_year, t.test_year) for t in tasks]
     for (s, e), t in zip(spans, tasks):
-        if e <= s or not panel.has_days(s - L - 1, e):
+        if e <= s or not panel.covers(s - 1, e, L):
             raise ValueError(f"the panel in memory does not hold test year {t.test_year}")
     D = max(e - s for s, e in spans)
-    seq = 4 * cfg.d_model * (L if cfg.n_layers > 1 else 1)
-    per_model = (L + 1 + D) * 800 * (N_CHAR + 3 * cfg.K + seq) * 4            # rough bytes of one model's pass
-    step = max(1, int(max_bytes // per_model))
+    step = max(1, int(max_bytes // panel.pass_bytes(cfg, D)))
     if device.type == "cuda":
         torch.cuda.empty_cache()                                             # hand back what training had cached
     results: list[dict] = []
@@ -138,9 +140,9 @@ def evaluate(cfg: Config, panel: Panel, model: AFSAModel, tasks: list[Task], kee
         for j, m in enumerate(idx):
             s, e = spans[m]
             n, u = e - s, int(batch.n_cols[j])
-            w = out["w"][j, : n + 1, :u].double().cpu().numpy()             # row 0 = the day before the test year
-            own = slice(L + 1, L + 1 + n)                                    # this model's test days (years differ in length)
-            ev = explained_variance(out["eps"][j:j + 1, own], batch.R[j:j + 1, own], batch.member[j:j + 1, own], cfg.ev_min_days)
+            w = out["book"][j, : n + 1, :u].double().cpu().numpy()          # row 0 = the day before the test year
+            own = slice(1, 1 + n)                                            # this model's test days (years differ in length)
+            ev = explained_variance(out["eps_d"][j:j + 1, own], out["R_d"][j:j + 1, own], out["member_d"][j:j + 1, own], cfg.ev_min_days)
             res = {
                 "test_year": tasks[m].test_year, "seed": tasks[m].seed,
                 "dates": panel.dates[s:e],
@@ -151,7 +153,9 @@ def evaluate(cfg: Config, panel: Panel, model: AFSAModel, tasks: list[Task], kee
                 "permnos": panel.permnos[batch.cols[j, :u].cpu().numpy()],
                 "w_first": w[1], "w_last": w[n],
             }
-            if keep_weights:
-                res["weights"] = w[1:].astype(np.float32)
+            if keep_weights:                                                 # the target; with the trading layer also the book
+                res["weights"] = out["w"][j, 1: n + 1, :u].float().cpu().numpy()
+                if cfg.band > 0 or cfg.band_eta < 1:
+                    res["book"] = w[1:].astype(np.float32)
             results.append(res)
     return results

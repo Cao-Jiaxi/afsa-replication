@@ -1,0 +1,189 @@
+Phase I speech text
+Jiaxi Cao | AMS 520 | Fall 2026
+20-minute main talk: slides 1--29. Optional Q&A: slides 30--52.
+
+1. Attention Factors for Statistical Arbitrage | 00:00--00:20 (20 seconds)
+Today I will introduce Attention Factors for Statistical Arbitrage. I will begin with a pairs-trading example, then explain how attention builds comparison portfolios and how LongConv trades their residuals. I will finish with the joint objective, data requirements and Phase One findings.
+
+2. Statistical arbitrage: pairs trading | 00:20--01:20 (60 seconds)
+Pairs trading is a simple form of statistical arbitrage. Imagine two comparable firms. Today A rises one percent and B rises three percent. A is the relative loser, even though its price has increased. If we expect that difference to reverse, we could buy A and short B after today. Suppose tomorrow A rises three percent and B rises one percent. With half the gross exposure on each side, the trade earns one percent before costs. The profit comes from tomorrow's relative move. Today's separation does not guarantee a reversal; finding a reliable trading signal is part of the problem.
+
+3. Building a statistical-arbitrage strategy | 01:20--02:00 (40 seconds)
+We have to answer three connected questions. Which stocks are similar? What counts as an unusual relative movement? And how should we trade it? A conventional route begins with stock returns, extracts PCA factors, computes residuals, looks for mean reversion, and then trades. PCA emphasizes explained historical variation. The later trading step must work with the comparisons that PCA has already chosen. This paper lets the trading objective influence those comparisons as well.
+
+4. The classical factor model | 02:00--02:45 (45 seconds)
+The familiar factor model decomposes a stock's return. F contains factor returns, such as market, value or momentum. Beta contains the stock's loadings, or sensitivity to each factor. Beta transpose F adds up the common contributions. Epsilon is the remainder, commonly called the idiosyncratic residual or firm-specific risk. We can use this decomposition to explain price movements and to define deviations for statistical arbitrage. The equation works with returns, rather than an absolute dollar valuation.
+
+5. Relative deviations without an absolute valuation | 02:45--03:25 (40 seconds)
+We can work directly with relative movements. Epsilon is actual return minus the factor-implied common return. The comparison basket supplies the benchmark, so we do not need to estimate the stock's fundamental dollar price first. If the stock returned one percent while its comparison returned two percent, its residual is minus one percent. The opportunity would come from predictable future residual returns. A negative residual alone does not establish that the stock is undervalued or that it will recover.
+
+6. Joint learning: the paper's roadmap | 03:25--03:45 (20 seconds)
+The central idea is to train the whole strategy together. Attention builds comparison portfolios. Their residual history enters LongConv, which produces trading positions. We then evaluate actual stock returns after costs through net Sharpe. Explained variance also anchors the factor model. These are parts of one joint fit.
+
+7. Attention identifies similar companies | 03:45--04:20 (35 seconds)
+Attention provides a way to identify useful peers. We describe each firm through characteristics, then learn queries that select weighted baskets of firms. One query might emphasize technology companies, while another emphasizes banks. A company can participate in several baskets, so these are overlapping groups rather than hard sector assignments. The paper finds sector-like patterns even though industry labels are not supplied. We now look at the calculation that creates those baskets.
+
+8. Attention constructs factor portfolios | 04:20--05:15 (55 seconds)
+Let X contain one row of characteristics for each company. The learned matrix W K maps those rows into a shared key space. The superscript K is a label for the key projection, not a power and not a factor-count index. Next, each learned query scores the companies in that space. Softmax operates across stocks and converts the scores into portfolio weights. The factor count K says how many queries and baskets we want. The embedding width d says how many coordinates each key and query has. The paper uses thirty-two embedding coordinates. These two dimensions are separate.
+
+9. Why keep a shared key projection? | 05:15--06:05 (50 seconds)
+Why keep W K? It creates a common key space shared by every factor query. Raw inputs such as momentum, size, value, profitability and volatility can be mixed into learned coordinates. We might interpret some combinations as growth, defensiveness or value, but those names are only illustrations. The model learns numbers, not preassigned economic labels. Every query then asks a different question about the same coordinates. Mathematically, a linear projection can be absorbed into effective query coefficients; retaining W gives the architecture a shared representation whose width controls the parameterization.
+
+10. A query can create a technology-heavy basket | 06:05--07:05 (60 seconds)
+Imagine thirty-two-coordinate keys, with the first two coordinates shown here and the rest zero. This illustrative scaled query selects the first coordinate. Its scores are three for Nvidia, two point seven for Microsoft, two point six for Apple, and minus point two for JPMorgan. These are hypothetical numbers. Softmax exponentiates the scores. Nvidia's weight divided by JPMorgan's weight is exponential three point two, or about twenty-four point five. The other firms affect their absolute weights, but not this ratio. Across five hundred firms, a query like this can create a technology-heavy basket. We repeat the calculation with different queries.
+
+11. The attention matrix contains the factor baskets | 07:05--07:35 (30 seconds)
+Stacking the query weights gives A, the attention matrix. Each column corresponds to a company and each row to a factor basket. If we choose thirty-two factors for an illustration, we get thirty-two queries and thirty-two rows. That choice is independent of having thirty-two key coordinates. The baskets can overlap. We now have portfolio weights; next we calculate the returns of those portfolios.
+
+12. Factor returns: what does A R = F mean? | 07:35--08:25 (50 seconds)
+A times R equals F has a simple portfolio meaning. A row of A gives the fractions held in each stock. Multiplying that row by the stock returns gives the factor basket's return. Here a factor puts fifty percent in stock A, thirty percent in B and twenty percent in C. Their realized returns are two percent, one percent and minus one percent. The weighted sum is one point one percent. Doing this for every row gives the vector F. The weights are known before the return day; the factor return becomes known when the stocks' returns occur.
+
+13. Computing the loadings B | 08:25--09:25 (60 seconds)
+B tells us how to combine the factor baskets to mimic each stock. Its row for stock i is that stock's loading vector. The paper computes B analytically from A, using a regularized pseudoinverse. It does not fit a separate historical-return regression here. The date t minus one reminds us that the hedge is based on information available before the stock return at t. If two factor baskets are very similar, their matrix can be nearly singular. Adding ridge stabilizes the inverse, at the cost of making neutrality approximate. In the equal-weight two-stock example with zero ridge, both loadings are one. The paper leaves the numerical ridge unspecified.
+
+14. The residual-portfolio matrix | 09:25--10:15 (50 seconds)
+We can now compute the deviation. Subtract B times F from the stock returns. Since F equals A times R, the residual is P times R, where P is I minus B times A. Each row starts with a stock and subtracts its factor-mimicking basket. That row is a recipe for a tradable residual portfolio. In the two-stock equal-weight example, A's residual is half A's return minus half B's return. The residual is a relative return; whether its future behavior supports a profitable trade is learned from its history.
+
+15. Joint learning: residuals to trading signals | 10:15--10:35 (20 seconds)
+We have completed the comparison step and computed the residual portfolios. The next step is to learn what to do with their histories. LongConv turns those histories into residual positions. The eventual performance objective sends gradients back through the policy and the attention baskets, so the comparison can improve together with the trade.
+
+16. LongConv learns positions from residual history | 10:35--11:20 (45 seconds)
+LongConv takes each residual portfolio's last thirty daily returns and produces a signed position. The same learned rule is shared across firms, and it can learn reversal or continuation patterns.
+
+Thirty days is the information for one decision; eight years supplies the examples used to learn that rule. The temporal module is replaceable, for example by a Transformer. Its output is still a residual position, not a stock weight.
+
+17. LongConv's 32 temporal channels | 11:20--12:00 (40 seconds)
+Picture thirty-two parallel channels, each thirty days long. Each has a learned causal filter, plus a skip connection carrying the current known value. The squash operation shrinks small kernel coefficients during every forward pass.
+
+The paper specifies this core, but not the exact scalar encoder or readout; those are recorded implementation choices. These channels are separate from attention's thirty-two embedding coordinates.
+
+18. Joint learning: signals to net performance | 12:00--12:20 (20 seconds)
+The temporal model has produced residual positions. We now map them into actual stock weights, calculate turnover and shorting costs, and score the net returns. Net Sharpe is an objective for training, not a separate forecast. The explained-variance term also guides the comparison baskets.
+
+19. Residual signals become actual stock weights | 12:20--13:05 (45 seconds)
+P transpose combines the residual positions into actual stock holdings. In this equal-weight, zero-ridge example, we subtract the signal mean, point one.
+
+Signals of point six, zero, and minus point three become stock weights of point five, minus point one, and minus point four. The zero-signal stock is still short because it supplies a hedge.
+
+Generally, we then normalize total absolute exposure to one; that does not enforce dollar neutrality.
+
+20. Costs are measured in stock space | 13:05--13:50 (45 seconds)
+We charge costs on stock trades, including hedge changes. Turnover is the full sum of absolute weight changes. The paper charges five basis points per unit of turnover, plus one basis point on short exposure.
+
+Here, turnover of point six and short exposure of point one cost three point one basis points. A ten-basis-point gross return leaves six point nine net.
+
+Training uses this net return, so expensive trading reduces the objective.
+
+21. The joint training objective | 13:50--14:45 (55 seconds)
+The model jointly learns the embedding, factor queries, and sequence policy. The first term rewards average return after costs, above the daily risk-free return, relative to portfolio volatility. The second rewards the average per-stock explained variance.
+
+Its weight, one hundred, is a hyperparameter chosen using initial validation; it is not learned by backpropagation or forced by mathematics.
+
+Factor parameters receive gradients through both terms. The policy receives its trading gradient through net Sharpe. Both statistics are computed over the full training return path.
+
+22. Why include explained variance? | 14:45--15:40 (55 seconds)
+Why include explained variance? The factor model should explain common movements as well as help trading. For each stock, this score compares residual variance with the stock's original return variance. If the residual retains twenty percent of the original variance, the score is point eight. If it retains all of it, the score is zero. We average across stocks. This term anchors the learned representation as a factor model; the authors say it supports identification and improves performance. It is not guaranteed to lie between zero and one. The coefficient one hundred is a chosen hyperparameter, selected on the initial validation period, rather than a learned parameter or mathematical constant.
+
+23. Training chronology and parameter status | 15:40--16:25 (45 seconds)
+The paper uses eight-year training windows and retrains annually. Before testing nineteen ninety-eight, nineteen ninety-six and ninety-seven provide the initial validation period. Our full-window refit is a recorded reproduction interpretation.
+
+The embedding, queries, and sequence parameters are learned; the factor and portfolio matrices are computed. Epochs and learning rate are settings. The paper leaves details such as numerical ridge, exact encoder, and seeds unpublished, so our implementation records those choices.
+
+24. The 79 model inputs | 16:25--17:00 (35 seconds)
+Now we can ask what information attention receives. Seventy-nine does not mean seventy-nine independent characteristics. There are thirty-nine base characteristics across these six groups. Each becomes a firm rank, and the paper appends thirty-nine raw cross-sectional medians and one risk-free return.
+
+CRSP and Compustat supply the ingredients; we compute most characteristics and their ranks. The report gives every recipe.
+
+25. WRDS data and historical identifiers | 17:00--17:40 (40 seconds)
+Through WRDS, CRSP supplies market histories, Compustat supplies accounting data, and dated links connect them. PERMNO identifies a security, PERMCO a company, and GVKEY an accounting firm. We preserve historical membership, including inactive firms.
+
+The paper selects five hundred equities using preceding-month size. Our local Try1 instead selects five hundred companies with fixed trading share classes. That is a disclosed universe difference.
+
+26. Ranks, missing data and information timing | 17:40--18:20 (40 seconds)
+Inputs must precede the trading decision. Monthly features use completed months, and accounting data need publication lags.
+
+The paper first carries the firm's last available characteristic. If no own history exists, it uses the cross-sectional median. We then rank the filled values; ties receive average ranks. Try1's exact centering and cohort rules are local choices. Missing accounting components remain missing rather than automatically becoming zero.
+
+27. Published out-of-sample evidence | 18:20--19:05 (45 seconds)
+These are the authors' published results for nineteen ninety-eight through twenty twenty-one. With thirty factors, attention's net Sharpe is two point two eight, compared with one point five seven for PCA plus LongConv.
+
+A weaker factor can capture a useful local relationship despite explaining little total variation. However, more factors do not always improve net performance: one hundred factors has higher gross Sharpe, while thirty factors has higher net Sharpe. These are not local reproduction results.
+
+28. CPU and GPU roles | 19:05--19:35 (30 seconds)
+The CPU handles data retrieval, historical joins, characteristic construction, and audits. The GPU suits batched attention, LongConv, and gradients.
+
+Try1 calculates its complete-window economic objective on the CPU and replays model calculations on the GPU under limited memory. This is our implementation choice. Memory chunks must preserve one complete-window objective, not separate Sharpe ratios.
+
+29. Phase I findings and next steps | 19:35--20:00 (25 seconds)
+The paper jointly learns peer portfolios and residual trades. Dated Try1 audits show a partial reproduction with source gaps. Common median and risk-free inputs cancel in the printed linear attention equations; risk-free return still enters the objective.
+
+Next come empirical validation and cost-aware extensions. Thank you.
+
+30. Backup material | Optional Q&A
+These remaining slides support questions after the main talk. They include the loading derivation, the LongConv implementation, training settings, and the complete characteristic dictionary. I also kept separate slides on normalization, risk-free return, turnover, and a possible future controller. The twenty-minute presentation ends before this section.
+
+31. Analytic loadings: a ridge reconstruction | Optional Q&A
+This derivation works in portfolio-weight space. Each row of A is a factor basket. We ask which combination of those baskets approximates each stock's unit portfolio. The first term measures the reconstruction error, and the ridge term penalizes large loadings. Differentiating and setting the derivative to zero gives the matrix equation on the third line, and solving it gives B. This explains the paper's formula. It is not a separate historical-return regression.
+
+32. Ridge and neutrality | Optional Q&A
+Ridge helps when learned factor baskets are nearly redundant, but it changes the exact projection geometry. With zero ridge and full row rank, applying A to a residual gives zero, and applying P twice is the same as applying it once. With positive ridge, the displayed expression for A times P is generally nonzero, so the hedge is approximate. Factor neutrality is also different from dollar neutrality. The absolute weights sum to one, but their signed sum can be nonzero.
+
+33. One possible LongConv wrapper | Optional Q&A
+This is one concrete way to complete the architecture around the published LongConv core. A shared affine encoder maps each residual scalar into thirty-two channels. The causal convolution processes them. We then take the last known hidden vector, apply GELU and dropout, and use a linear readout to produce one residual signal. These encoder and readout choices belong to Try1; the target paper does not fully specify them. They also use different parameters from the characteristic embedding W key.
+
+34. Kernel initialization and causal convolution | Optional Q&A
+The kernel starts from normal random draws multiplied by a decay pattern across lags and channels. That provides different initial time scales; training then changes the kernel through the trading objective. The squash threshold is point zero zero one and is applied during every forward pass. For FFT computation, we use zero padding so the convolution is linear rather than circular. Otherwise, values can wrap around the sequence boundary and violate the intended causal calculation.
+
+35. Published training settings | Optional Q&A
+This table collects the settings actually stated in the paper. Attention has thirty-two embedding coordinates. LongConv has one layer, thirty-two channels, and a thirty-day residual lookback. The model uses an eight-year window, annual retraining, thirty epochs, and a learning rate of point zero zero three. Dropout is point one, LongConv weight decay is point zero five, and explained variance receives weight one hundred. The text names Adam, although its citation points to AdamW, so the optimizer interpretation needs to be recorded.
+
+36. Unpublished implementation choices | Optional Q&A
+This table separates our choices from published settings. Try1 selected a ridge of ten to the minus six using the initial validation period and used seeds zero, one, and two. It records a particular encoder and readout, initialization rules, and one full-window update per epoch. The original float-thirty-two run uses two-hundred-and-fifty-six-day memory chunks. These choices were not selected to match test-period results. A later K-thirty continuation has its own recorded protocol and must be distinguished from that original run.
+
+37. Why the 40 common inputs cancel | Optional Q&A
+On a given date, every firm receives the same raw median values and risk-free input. Under the printed linear embedding, these columns add the same constant to every firm's score for a particular factor. Softmax divides by the sum of exponentials, so the common exponential factor cancels. This is a mathematical consequence of the written equations, rather than an author-reported result. Median imputation can still change the firm-specific ranks, and risk-free return still enters the training objective.
+
+38. WRDS source routes in Try1 | Optional Q&A
+We download raw ingredients through these WRDS routes. CRSP daily files provide returns, prices, volumes, and quote information. Monthly files provide size inputs and dated security information. Compustat provides annual accounting statements. The CRSP-Compustat link history connects security identifiers to accounting firms using dated links. Daily factor files provide the risk-free return and factor series used in several characteristics. These schema names reflect our account, so they require verification on another account. We preserve exports, units, and query metadata.
+
+39. Cleaning and characteristic availability | Optional Q&A
+Units and dates must be correct before we compute ratios. In our legacy CRSP files, price times shares outstanding needs the thousand-share conversion to give dollars. A negative price can encode a quote convention, so market equity uses its absolute value. Compustat accounting amounts are in millions. We also apply dated company links and reporting lags before joining the records. Missing return observations remain distinct from observed zeros, and delisting payoffs need their own explicit treatment.
+
+40. Past-return characteristics: 8 | Optional Q&A
+These eight inputs summarize different parts of the return history. The monthly momentum variables cover different lag ranges; for example, r twelve two compounds months twelve through two before the current month. The short-term momentum and reversal rows both use the prior month under the reference definition, so we retain that duplicate rather than silently remove it. The final three rows use the previous day or week. Try1 defines a week as five trading sessions and records a sample-standard-deviation choice for weekly volatility.
+
+41. Value characteristics: 8 | Optional Q&A
+Most of these value inputs are computed ratios, rather than fields downloaded directly. Assets, earnings, and cash flow are compared with market equity or book equity. Book equity itself requires a documented construction from accounting fields, and the market-equity denominators use the specified December date. Two details deserve attention. The literal cash-flow formula needs WCAPCH, which is absent from our modern retained records. The Q definition also has a prose-versus-field inconsistency, so we record the literal fields used instead of silently replacing them.
+
+42. Investment characteristics: 3 | Optional Q&A
+These inputs require adjacent annual statements. Investment measures asset growth relative to prior-year assets. Net operating assets subtract operating liabilities from operating assets and scale the result by prior-year assets. DPI-two-A measures changes in gross property, plant, equipment, and inventory, again relative to prior assets. The minus superscript means the adjacent prior fiscal year. We need both valid inputs and the correct availability date before a new annual value can enter a trading decision.
+
+43. Trading-friction characteristics: 10 | Optional Q&A
+This group mixes direct levels with calculated market statistics. Assets is an accounting level, while size and share turnover use CRSP data. The price-to-high variable needs adjusted prices. Residual variance uses a past Fama-French regression, and spread uses closing bid and ask quotes rather than daily high and low. Unexplained volume requires a historical regression. The final beta uses a correlation and volatility-ratio construction, rather than simply one ordinary regression coefficient. Every window and missing-data rule is documented in the report.
+
+44. Profitability characteristics: 7 | Optional Q&A
+These measures compare operating quantities with assets, sales, or book equity. PROF uses sales less cost of goods sold, while capital turnover uses sales over prior assets. Fixed costs combine selling and administrative expenses, research and development, and advertising. Missing expenses are not automatically zero. Operating profitability also needs an interest-expense choice because the reference has a field inconsistency. The remaining measures use operating income or depreciation. We calculate a raw ratio only when its required components and denominator are valid.
+
+45. Intangible characteristics: 3 | Optional Q&A
+The category label comes from the paper's characteristic table. Operating accruals uses annual changes in several balance-sheet fields and depreciation. The signs shown follow the delegated appendix literally, even though they differ from a common working-capital accrual formula. Operating leverage is cost of goods sold plus selling and administrative expenses over assets. Price-cost margin is sales less cost of goods sold, divided by sales. These are annual computed inputs, so their public availability still needs a reporting lag.
+
+46. Missingness can change the meaning of an input | Optional Q&A
+A feature name does not guarantee that we observe a recent value for every firm. In the approved Try1 snapshot, the literal cash-flow input often lacks WCAPCH, and the fixed-cost input often lacks required expenses. Median fallback covers fifty-three point five percent of monthly-member days for cash flow and sixty-four point three percent for fixed costs. These are cohort-specific audit figures. Carries can also be stale, and median fills create ties. Source-age and imputation flags let us see those effects rather than hide them.
+
+47. Normalization and relative scale | Optional Q&A
+The final portfolio combines all residual baskets before normalization. If we multiply every signal by the same positive number, the raw stock vector scales by that number and the final division cancels it. If we change only one signal, its contribution changes relative to the others. Residual rows also have different gross sizes, and overlapping stock positions can offset each other. So a residual signal is not a final capital percentage. A zero raw vector needs an explicit rule because its normalization is undefined.
+
+48. Risk-free return and volatility convention | Optional Q&A
+The printed training objective uses T in its variance denominator. Using T minus one gives the second convention shown here, which changes the standard deviation by the square-root factor. We also need daily risk-free returns in the same decimal units as portfolio returns. French CSV values are percentages, so they are divided by one hundred once. Try1 uses the mean aligned daily RF in the numerator and net-return volatility in the denominator. Plain and RF-subtracted Sharpe are reported separately because they need not agree.
+
+49. Turnover: measured versus inferred | Optional Q&A
+The paper reports a seven point one four percentage-point gap between gross and net annual mean returns for thirty factors. Under a two-hundred-and-fifty-two-day arithmetic convention, that implies about two point eight three three basis points of combined daily cost. The cost equation contains both turnover and short exposure. Assuming half the gross exposure is short gives about forty-seven percent daily turnover. That is an assumption-dependent inference, not a reported turnover statistic. A reproduction should measure turnover directly from its saved stock weights.
+
+50. A future question about existing holdings | Optional Q&A
+The original already trains after trading costs, but its sequence policy produces a target from residual history. A possible extension gives a controller the current holdings as well, so it can decide whether moving toward that target is worthwhile. Online learning could adapt a readout after new outcomes become available. Sequential control could account for how today's trades affect future holdings and costs. These are proposed later experiments. We would compare them with simple rebalancing rules at similar exposure and risk, rather than treat lower turnover alone as success.
+
+51. Literature: factor extraction and trading | Optional Q&A
+This comparison explains the transition from classical residual trading to attention factors. PCA first finds common return directions that explain variation, and an OU rule then trades a fitted mean-reverting spread. Deep learning statistical arbitrage gives the temporal policy more flexibility. The attention paper also changes the factor construction: the comparison baskets and trading policy are learned together after costs. That matters because a weak, local relationship can be useful for a trade even when it is not a leading direction of overall return variation.
+
+52. References | Optional Q&A
+The target paper is the authority for this model and its published results. The earlier statistical-arbitrage papers provide the literature context, and the asset-pricing appendix provides delegated characteristic definitions. The original LongConv paper explains the sequence method; its reference implementation does not establish the finance paper's exact wrapper. WRDS, CRSP, and Compustat documentation support the raw-data construction. Our report keeps these sources separate from local implementation choices and Try1 audit findings.

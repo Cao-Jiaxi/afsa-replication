@@ -11,7 +11,13 @@ rule uses no later information. The "common" universe keeps US common stocks onl
 
     .venv\\Scripts\\python.exe -m afsa.wrds_universe download   # crsp.msf_v2 (1985-12 to 2025-12), crsp.stkdelists -> Data\\WRDS\\raw\\
     .venv\\Scripts\\python.exe -m afsa.wrds_universe build      # -> Data\\WRDS\\universe\\{broad,common}.parquet
+    .venv\\Scripts\\python.exe -m afsa.wrds_universe buffer     # -> Data\\WRDS\\universe\\broad_buffer600.parquet (only that file)
     .venv\\Scripts\\python.exe -m afsa.wrds_universe compare    # against Ander's universe files
+
+Buffered lists (config.BUFFERED_UNIVERSES; `buffered`): a holding month takes the top 500 and keeps the securities of
+last month's list that still rank within `keep` (600 for wrds_broad_buffer600), so a list holds 500 to `keep`
+securities. The rule starts from the plain list of 1989-11, so every security on a buffered list has been on a plain
+list since then, and its daily data are in the downloads.
 
 Everything written here derives from CRSP: it stays under Data\\ (git-ignored).
 """
@@ -104,8 +110,13 @@ def is_common(df: pd.DataFrame) -> pd.Series:
             & df.issuertype.isin(["CORP", "ACOR"]) & df.usincflg.eq("Y"))
 
 
-def build(msf: pd.DataFrame, delists: pd.DataFrame, kind: str = "broad") -> pd.DataFrame:
-    """Top 500 of each holding month, formed on the month-end market cap of the previous month."""
+COLUMNS = ["month", "formation_date", "permno", "permco", "ticker", "issuernm", "cusip", "siccd", "primaryexch",
+           "securitysubtype", "sharetype", "issuertype", "usincflg", "type", "me", "me_company", "rank"]
+
+
+def ranked(msf: pd.DataFrame, delists: pd.DataFrame, kind: str = "broad") -> pd.DataFrame:
+    """Every eligible security of each holding month HOLD_START..HOLD_END with its rank by the month-end market cap of
+    the previous month (1 = largest), sorted by month and rank, in the columns of the list files."""
     deldt = msf.permno.map(delists.set_index("permno").delistingdt)
     elig = (msf.securitytype.eq("EQTY") & msf.primaryexch.isin(EXCHANGES) & msf.mthcap.gt(0)
             # listed on the formation day: a security whose last trading day (`delistingdt`) came earlier in m-1 keeps
@@ -126,14 +137,78 @@ def build(msf: pd.DataFrame, delists: pd.DataFrame, kind: str = "broad") -> pd.D
     f["me_company"] = f.groupby(["month", "permco"]).mthcap.transform("sum")    # all eligible classes of the firm
     f = f.sort_values(["month", "mthcap", "permno"], ascending=[True, False, True])
     f["rank"] = f.groupby("month").cumcount() + 1
-    u = f[f["rank"] <= N_STOCKS].copy()
-    u["type"] = security_type(u)
-    u = u.rename(columns={"mthcaldt": "formation_date", "mthcap": "me"})
-    cols = ["month", "formation_date", "permno", "permco", "ticker", "issuernm", "cusip", "siccd", "primaryexch",
-            "securitysubtype", "sharetype", "issuertype", "usincflg", "type", "me", "me_company", "rank"]
-    u = u[cols].reset_index(drop=True)
+    f["type"] = security_type(f)
+    return f.rename(columns={"mthcaldt": "formation_date", "mthcap": "me"})[COLUMNS].reset_index(drop=True)
+
+
+def build(msf: pd.DataFrame, delists: pd.DataFrame, kind: str = "broad") -> pd.DataFrame:
+    """Top 500 of each holding month, formed on the month-end market cap of the previous month."""
+    r = ranked(msf, delists, kind)
+    u = r[r["rank"] <= N_STOCKS].reset_index(drop=True)
     sizes = u.groupby("month").size()
     assert len(sizes) == (HOLD_END - HOLD_START).n + 1 and (sizes == N_STOCKS).all(), "a month without 500 stocks"
+    return u
+
+
+def buffered(r: pd.DataFrame, keep: int, top: int = N_STOCKS) -> pd.DataFrame:
+    """The buffered lists from `ranked`'s output: each holding month takes the `top` largest securities plus those of
+    last month's list that still rank within `keep`; the first month is the plain top. A list then holds `top` to `keep`
+    securities, sorted by rank. Column `buffered`: on the list only through the band (rank above `top`)."""
+    if keep < top:
+        raise ValueError(f"keep ({keep}) must be at least top ({top})")
+    months = pd.PeriodIndex(r["month"].unique(), freq="M").sort_values()
+    if len(months) and (months[-1] - months[0]).n + 1 != len(months):
+        raise ValueError("the ranking must hold every month from the first to the last")
+    out, prev = [], None
+    for _, g in r.groupby("month", sort=True):
+        take = g["rank"] <= top
+        if prev is not None:
+            take |= g["permno"].isin(prev) & (g["rank"] <= keep)
+        out.append(g[take])
+        prev = out[-1]["permno"].to_numpy()
+    u = pd.concat(out, ignore_index=True)
+    u["buffered"] = u["rank"] > top
+    return u
+
+
+def churn(u: pd.DataFrame) -> pd.DataFrame:
+    """By holding month (from the second): list size, securities that enter and that leave."""
+    lists = u.groupby("month")["permno"].apply(set)
+    rows = [(m, len(cur), len(cur - prev), len(prev - cur)) for (_, prev), (m, cur) in zip(lists.iloc[:-1].items(), lists.iloc[1:].items())]
+    return pd.DataFrame(rows, columns=["month", "size", "enter", "leave"]).set_index("month")
+
+
+def build_buffered(universe: str) -> pd.DataFrame:
+    """Writes the list file of a buffered universe (config.BUFFERED_UNIVERSES), e.g. wrds_broad_buffer600 ->
+    Data/WRDS/universe/broad_buffer600.parquet. The plain list files are not touched. Checks: every month holds the
+    plain top 500 (equal to the plain list file on disk), at most `keep` securities, and each buffered security was on
+    last month's list and ranks within `keep`."""
+    from afsa.config import BUFFERED_UNIVERSES
+
+    kind, keep = BUFFERED_UNIVERSES[universe]
+    msf, delists = pd.read_parquet(MSF_FILE), pd.read_parquet(DELIST_FILE)
+    r = ranked(msf, delists, kind)
+    u = buffered(r, keep)
+    plain = r[r["rank"] <= N_STOCKS]
+    by_month = u.groupby("month")
+    assert by_month.size().between(N_STOCKS, keep).all() and len(by_month) == (HOLD_END - HOLD_START).n + 1
+    assert u.loc[~u["buffered"], ["month", "permno"]].reset_index(drop=True).equals(plain[["month", "permno"]].reset_index(drop=True))
+    on_list = set(zip(u["month"], u["permno"]))
+    extra = u[u["buffered"]]
+    assert all((m - 1, p) in on_list for m, p in zip(extra["month"], extra["permno"])) and (extra["rank"] <= keep).all()
+    path = UNIVERSE_DIR / f"{kind}.parquet"
+    if path.exists():                                                         # the top 500 of the file in use
+        f = pd.read_parquet(path, columns=["month", "permno"])
+        same = set(zip(pd.PeriodIndex(f["month"], freq="M"), f["permno"])) == set(zip(plain["month"], plain["permno"]))
+        assert same, f"the top 500 here differ from {path.name}: rebuild it first"
+    out = UNIVERSE_DIR / f"{universe.removeprefix('wrds_')}.parquet"
+    u.to_parquet(out, index=False)
+    c, cp = churn(u), churn(plain)
+    print(f"{universe}: {len(u):,} stock-months, {u.permno.nunique():,} PERMNOs, {u.month.min()} to {u.month.max()} -> {out}")
+    print(f"  list size: mean {c['size'].mean():.1f}, min {by_month.size().min()}, max {by_month.size().max()}; "
+          f"{int(u['buffered'].sum()):,} stock-months held through the band (rank {N_STOCKS + 1} to {keep})")
+    print(f"  securities entering a month: {c['enter'].mean():.2f} (plain top {N_STOCKS}: {cp['enter'].mean():.2f}); "
+          f"leaving: {c['leave'].mean():.2f} ({cp['leave'].mean():.2f})")
     return u
 
 
@@ -184,14 +259,21 @@ def compare(kind: str = "broad") -> dict:
 
 
 def main() -> None:
+    from afsa.config import BUFFERED_UNIVERSES
+
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("command", choices=["download", "build", "compare"])
+    p.add_argument("command", choices=["download", "build", "buffer", "compare"])
+    p.add_argument("--universe", nargs="*", default=list(BUFFERED_UNIVERSES), choices=list(BUFFERED_UNIVERSES),
+                   help="buffer: the buffered universes to write [default: all]")
     a = p.parse_args()
     if a.command == "download":
         download()
         download_delists()
     elif a.command == "build":
         build_all()
+    elif a.command == "buffer":
+        for universe in a.universe:
+            build_buffered(universe)
     else:
         for kind in ("broad", "common"):
             compare(kind)

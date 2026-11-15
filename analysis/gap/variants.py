@@ -22,8 +22,8 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from afsa.config import RESULTS_DIR, TRADING_DAYS, Config, data_folder  # noqa: E402
-from afsa.metrics import PAPER_TABLE2, stitch  # noqa: E402
+from afsa.config import RESULTS_DIR, TRADING_DAYS, Config  # noqa: E402
+from afsa.metrics import COST_SHORT, COST_TRADE, PAPER_TABLE2, stitch  # noqa: E402
 
 VARIANTS: dict[str, dict] = {
     "baseline": {},
@@ -38,6 +38,7 @@ VARIANTS: dict[str, dict] = {
     # length of the paper's test years (fig2_digitize.py)
     "batch035": {"batch_days": 35}, "batch049": {"batch_days": 49}, "batch063": {"batch_days": 63},
     "batch252": {"batch_days": 252}, "batch504": {"batch_days": 504},
+    "batch252_e60": {"batch_days": 252, "epochs": 60},       # 480 steps like the baseline, in batches of 252 days
     # LongConv
     "kernel002": {"kernel_init_std": 0.02},
     "dropout0": {"dropout": 0.0}, "dropout03": {"dropout": 0.3},
@@ -47,6 +48,8 @@ VARIANTS: dict[str, dict] = {
     "rf_hurdle": {"rf_hurdle": True},
     # the factor model
     "w_init3": {"w_init_scale": 3.0}, "w_init10": {"w_init_scale": 10.0}, "q_init3": {"q_init_std": 3.0},
+    "ridge1e6": {"ridge": 1e-6}, "ridge1e4": {"ridge": 1e-4}, "ridge1e3": {"ridge": 1e-3},   # the baseline is 1e-5
+    "entry_member": {"entry_rule": "member"},                # a signal for every member, also in its first 30 days
     "no_daily": {"drop_chars": ("Ret_D1", "Ret_W1", "STD_W1", "Vol")},     # only the characteristics that change monthly
     "no_past_returns": {"drop_groups": ("past_returns",)},                 # a row of the paper's Table 3
     "no_frictions": {"drop_groups": ("trading_frictions",)},
@@ -56,6 +59,8 @@ VARIANTS: dict[str, dict] = {
     "window": {"universe": "window"}, "window_train": {"universe": "window_train"},
     # what trading cost the policy is trained with (always scored at 5 bp)
     "cost10": {"cost_trade": 1e-3}, "cost075": {"cost_trade": 7.5e-4},
+    "ridge1e4_cost10": {"ridge": 1e-4, "cost_trade": 1e-3},  # the two candidates together
+    "ridge1e4_cost075": {"ridge": 1e-4, "cost_trade": 7.5e-4},
     # combinations with the cumulative input
     "cum_window": {"cumulative": True, "universe": "window"},
     "cum_window_train": {"cumulative": True, "universe": "window_train"},
@@ -76,7 +81,6 @@ PAPER_TABLE3 = {"no_past_returns": (1.50, 7.82, 5.23, 0.59, 3.09), "no_frictions
                 "cum_no_past_returns": (1.50, 7.82, 5.23, 0.59, 3.09)}
 PERIODS = {"test": (1998, 2021, 8), "validation": (1996, 1997, 6)}        # first year, last year, training years
 BLOCKS = ((1998, 2005), (2006, 2013), (2014, 2021))
-COST_TRADE, COST_SHORT = 5e-4, 1e-4                                        # the paper's costs
 
 
 def config(variant: str, K: int, train_years: int, extra: dict | None = None) -> Config:
@@ -107,7 +111,7 @@ def row(cfg: Config, first: int, last: int) -> dict[str, float] | None:
     for seed_dir in seeds:
         if any(not (seed_dir / f"{y}.npz").exists() for y in range(first, last + 1)):
             return None
-        daily = stitch(seed_dir, cfg)
+        daily = stitch(seed_dir)
         daily = daily[(daily.index.year >= first) & (daily.index.year <= last)]
         s = stats(daily)
         for a, b in BLOCKS:
@@ -155,17 +159,17 @@ def table(variants: list[str], Ks: list[int], extra: dict | None = None) -> pd.D
 
 def train(variants: list[str], Ks: list[int], seeds: list[int], periods: list[str], extra: dict | None = None) -> None:
     from afsa.config import WINDOW_RULES
-    from afsa.panel import Panel
+    from afsa.panel import BlockPanel, Panel, load_panel, panel_folder
     from afsa.run import run_config
-    panels: dict[str, Panel | None] = {}
+    panels: dict[str, Panel | BlockPanel | None] = {}
     for v in variants:
         for K in Ks:
             for period in periods:
                 first, last, train_years = PERIODS[period]
                 cfg = config(v, K, train_years, extra)
-                folder = data_folder(cfg.universe, cfg.fill)
+                folder = panel_folder(cfg)                                 # the month blocks for entry_rule history
                 if folder not in panels:                                   # a per-window universe loads one panel per test year
-                    panels[folder] = None if cfg.universe in WINDOW_RULES else Panel(folder, "cuda")
+                    panels[folder] = None if cfg.universe in WINDOW_RULES else load_panel(cfg, "cuda")
                 run_config(cfg, seeds, list(range(first, last + 1)), panels[folder])
 
 

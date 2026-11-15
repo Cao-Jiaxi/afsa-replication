@@ -5,6 +5,11 @@ Every parameter has a leading dimension M and model m only ever touches its own 
 
 Index convention: row t of a batch carries the return R_t and what was known at the close of t-1, so the
 weights computed for row t are the paper's omega_{t-1}.
+
+Two layouts of the sample feed the same model. A `Batch` (day x slot arrays, entry rules run and member) has one
+cross-section per day, so each lag is the residual of its own day's universe. A `BlockBatch` (month blocks, entry
+rule history) recomputes the lags of day t over day t's universe: factors and residuals are computed on every row of
+the block of t's month, over the month's list, and the lags are the rows before t in that block.
 """
 from __future__ import annotations
 
@@ -16,7 +21,7 @@ from torch import nn
 from torch.autograd.function import once_differentiable
 
 from .config import N_CHAR, N_LEVEL, Config
-from .panel import Batch
+from .panel import Batch, BlockBatch
 
 ATTENTION_PARAMS = ("W_rank", "W_level", "Q")       # the factor model; every other parameter is the sequence model
 
@@ -92,6 +97,33 @@ def explained_variance(eps: torch.Tensor, R: torch.Tensor, member: torch.Tensor,
     return ((1 - ratio) * ok).sum(1) / ok.sum(1).clamp_min(1)
 
 
+def trade_book(w: torch.Tensor, member: torch.Tensor, band: float, eta: float) -> torch.Tensor:
+    """The trading layer (CLAUDE.md section 7): from the targets w [M, D+1, U] (one column per stock) to the books held.
+
+    Day 0's book is day 0's target. Each later day: gap = target - book; trade = eta * sign(gap) * max(|gap| - band, 0);
+    draft = book + trade, 0 outside the day's universe. The stocks that trade (or are closed) are resized together so
+    that ||book||_1 = 1, and the others keep their position exactly. If only new positions trade (the resize factor would
+    not be positive), the whole draft is rescaled; an empty draft takes the target. Differentiable almost everywhere.
+    """
+    book, books = w[:, 0], [w[:, 0]]
+    for t in range(1, w.shape[1]):
+        gap = w[:, t] - book
+        trade = eta * torch.sign(gap) * torch.relu(gap.abs() - band)
+        on = member[:, t]
+        draft = (book + trade) * on
+        moved = (trade != 0) | (~on & (book != 0))
+        size = draft.abs()
+        held = (size * ~moved).sum(-1, keepdim=True)
+        movers = (size * moved).sum(-1, keepdim=True)
+        total = held + movers
+        c = (1 - held) / torch.where(movers > 0, movers, torch.ones_like(movers))
+        resized = torch.where(moved, c * draft, draft)
+        uniform = draft / torch.where(total > 0, total, torch.ones_like(total))
+        book = torch.where((movers > 0) & (c > 0), resized, torch.where(total > 0, uniform, w[:, t]))
+        books.append(book)
+    return torch.stack(books, 1)
+
+
 class AFSAModel(nn.Module):
     """M independent Attention Factor + LongConv models (one per seed in `seeds`)."""
 
@@ -146,16 +178,20 @@ class AFSAModel(nn.Module):
     # ------------------------------------------------------------------ factor model (section 3.2)
     def factor_weights(self, b: Batch) -> torch.Tensor:
         """Eq. (1): omega^F = Softmax(Q (X W^K)^T / sqrt(d_x)), softmax over the day's universe. [M, T, U, K]"""
+        return self._attention(b.X, b.levels, b.member)
+
+    def _attention(self, X: torch.Tensor, levels: torch.Tensor, member: torch.Tensor) -> torch.Tensor:
+        """factor_weights on X [M, T, U, 39], levels [M, T, 40] and member [M, T, U]; every row needs a member."""
         cfg = self.cfg
-        M, T, U, C = b.X.shape
+        M, T, U, C = X.shape
         Qt = self.Q.transpose(1, 2) / math.sqrt(cfg.d_x)                                       # [M, d_x, K]
-        scores = torch.bmm(b.X.reshape(M, T * U, C), torch.bmm(self.W_rank * self.char_mask[:, None], Qt)).view(M, T, U, cfg.K)
+        scores = torch.bmm(X.reshape(M, T * U, C), torch.bmm(self.W_rank * self.char_mask[:, None], Qt)).view(M, T, U, cfg.K)
         if cfg.use_levels:
             # The medians and rf are the same for every stock of a day: they shift each factor's scores by a
             # constant, which the softmax over stocks removes. They are kept because the paper's X has 79 columns.
-            lev = (b.levels - self.level_mean[:, None]) / self.level_std[:, None]             # [M, T, 40]
+            lev = (levels - self.level_mean[:, None]) / self.level_std[:, None]               # [M, T, 40]
             scores = scores + torch.bmm(lev, torch.bmm(self.W_level * self.level_mask[:, None], Qt))[:, :, None, :]
-        return torch.softmax(scores.masked_fill(~b.member[..., None], float("-inf")), dim=2)
+        return torch.softmax(scores.masked_fill(~member[..., None], float("-inf")), dim=2)
 
     def gram(self, wF: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """omega^F omega^F' + ridge I and its Cholesky factor. [M, T, K, K] each."""
@@ -242,13 +278,20 @@ class AFSAModel(nn.Module):
         return torch.baddbmm(self.head_b[:, None, None], h, self.head_w[:, :, None]).view(M, T, U)
 
     # ------------------------------------------------------------------ the whole model
-    def forward(self, b: Batch, train: bool = False, gens=None) -> dict[str, torch.Tensor]:
+    def forward(self, b: Batch | BlockBatch, train: bool = False, gens=None) -> dict[str, torch.Tensor]:
         """Runs T consecutive days. With L = lookback: rows 0..L-1 only supply residual history, rows L..T-1 get
         weights, and rows L+1..T-1 ("loss days", D = T-L-1 of them) get returns and costs.
 
-        Returns wF [M,T,U,K], eps [M,T,U], w_port and w [M,D+1,U] (row L first), ret/turnover/short [M,D], ev [M].
+        Returns wF [M,T,U,K], eps [M,T,U], w_port and w [M,D+1,U] (row L first), ret/turnover/short [M,D], ev [M],
+        and the residuals, excess returns and membership of the rows that get weights (eps_d, R_d, member_d
+        [M,D+1,U]). A BlockBatch gives the same outputs, except wF, eps and w_port (`_forward_blocks`).
         """
         cfg, L = self.cfg, self.cfg.lookback
+        if isinstance(b, BlockBatch) != (cfg.entry_rule == "history"):
+            raise ValueError("entry_rule history reads the month blocks (BlockPanel), the other rules the day x slot arrays "
+                             "(Panel): load the sample with afsa.panel.load_panel")
+        if isinstance(b, BlockBatch):
+            return self._forward_blocks(b, train, gens)
         wF = self.factor_weights(b)
         G, chol = self.gram(wF)
         eps = self.project(wF, (G, chol), b.R)                                                 # residuals; 0 outside the universe
@@ -257,18 +300,63 @@ class AFSAModel(nn.Module):
         if cfg.cumulative:
             x = x.cumsum(-1)                                                                   # residual price path over the lookback
         n_cols = b.n_cols.tolist() if (train and gens is not None and cfg.dropout > 0) else None
-        w_port = self.signal(x, train, gens, n_cols) * b.valid[:, L:]                          # no signal without L prior days
+        has_signal = b.member if cfg.entry_rule == "member" else b.valid                       # "run": no signal without L prior days
+        w_port = self.signal(x, train, gens, n_cols) * has_signal[:, L:]
         w = self.project(wF[:, L:], (G[:, L:], chol[:, L:]), w_port)                           # (omega^eps)' omega^port
         w = w / w.abs().sum(-1, keepdim=True).clamp_min(1e-12)                                 # ||omega||_1 = 1
+        return {"wF": wF, "eps": eps, "w_port": w_port, "w": w,
+                **self._portfolio(w, b.R[:, L:], eps[:, L:], b.member[:, L:], b.rf[:, L:])}
+
+    def _forward_blocks(self, b: BlockBatch, train: bool, gens) -> dict[str, torch.Tensor]:
+        """forward on the month blocks (entry_rule history). Factors and residuals are computed on every row of the NB
+        blocks over the block's list, and the lags of a day are the L rows before it in its own block: residuals over
+        that day's universe, also on days before a stock entered it. The day's weights are hedged with its own row.
+
+        Returns wF [M,NB*R,S,K] and eps [M,NB*R,S] on the blocks' rows, w_port [M,D+1,S] in the slots of each day's
+        block, and the rest as forward, in one column per stock.
+        """
+        cfg, L = self.cfg, self.cfg.lookback
+        M, NB, R, S, C = b.X.shape
+        rows = NB * R
+        wF = self._attention(b.X.view(M, rows, S, C), b.levels.view(M, rows, -1), b.member.view(M, rows, S))
+        G, chol = self.gram(wF)
+        R_rows = b.R.view(M, rows, S)
+        eps = self.project(wF, (G, chol), R_rows)                                              # residuals over each block's list
+        m = torch.arange(M, device=eps.device)[:, None]
+        q = b.day_block * R + b.day_row                                                        # [M, D+1] row of each day
+        lags = q[:, :, None] + torch.arange(-L, 0, device=eps.device)                          # its L rows before, oldest first
+        x = eps[m[:, :, None], lags].transpose(2, 3) * cfg.resid_scale                         # [M, D+1, S, L]
+        if cfg.cumulative:
+            x = x.cumsum(-1)                                                                   # residual price path over the lookback
+        n_cols = [S] * M if (train and gens is not None and cfg.dropout > 0) else None
+        w_port = self.signal(x, train, gens, n_cols) * b.signal
+        w = self.project(wF[m, q], (G[m, q], chol[m, q]), w_port)                              # (omega^eps)' omega^port on the day
+        w = w / w.abs().sum(-1, keepdim=True).clamp_min(1e-12)                                 # ||omega||_1 = 1
+        on, idx = b.slot >= 0, b.slot.clamp_min(0)
+
+        def per_stock(v: torch.Tensor) -> torch.Tensor:                                        # [M, D+1, S] -> [M, D+1, U]
+            return torch.gather(v, 2, idx) * on
+        w = per_stock(w)
+        return {"wF": wF, "eps": eps, "w_port": w_port, "w": w,
+                **self._portfolio(w, per_stock(R_rows[m, q]), per_stock(eps[m, q]), on, b.rf)}
+
+    def _portfolio(self, w: torch.Tensor, R: torch.Tensor, eps: torch.Tensor, member: torch.Tensor,
+                   rf: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Return, costs and explained variance of the weights w [M, D+1, U]: day 0 holds the weights before the first
+        loss day, days 1..D are the loss days. R, eps, member [M, D+1, U] and rf [M, D+1] are on the same days.
+        With the trading layer on (cfg.band > 0 or cfg.band_eta < 1) return and costs are the book's (`trade_book`);
+        "book" is w otherwise."""
+        cfg = self.cfg
+        book = trade_book(w, member, cfg.band, cfg.band_eta) if (cfg.band > 0 or cfg.band_eta < 1) else w
         return {
-            "wF": wF, "eps": eps, "w_port": w_port, "w": w,
-            "ret": (w[:, 1:] * b.R[:, L + 1:]).sum(-1),
-            "turnover": (w[:, 1:] - w[:, :-1]).abs().sum(-1),
-            "short": torch.relu(-w[:, 1:]).sum(-1),
-            "ev": explained_variance(eps[:, L + 1:], b.R[:, L + 1:], b.member[:, L + 1:], cfg.ev_min_days),
+            "eps_d": eps, "R_d": R, "member_d": member, "book": book,
+            "ret": (book[:, 1:] * R[:, 1:]).sum(-1),
+            "turnover": (book[:, 1:] - book[:, :-1]).abs().sum(-1),
+            "short": torch.relu(-book[:, 1:]).sum(-1),
+            "ev": explained_variance(eps[:, 1:], R[:, 1:], member[:, 1:], cfg.ev_min_days),
             # R is in excess of rf stock by stock, so "ret" already charges rf on the net position sum(w). The
             # paper's formula charges it on one whole unit: the difference is rf * (1 - sum(w)).
-            "rf_drag": b.rf[:, L + 1:] * (1 - w[:, 1:].sum(-1)),
+            "rf_drag": rf[:, 1:] * (1 - book[:, 1:].sum(-1)),
         }
 
     def objective(self, out: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:

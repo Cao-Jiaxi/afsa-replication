@@ -13,15 +13,18 @@ resumes where it stopped. Results go to results/runs/<configuration>/seed<s>/<ye
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import subprocess
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from .config import RESULTS_DIR, WINDOW_RULES, Config, data_folder
+from .config import RESULTS_DIR, ROOT, WINDOW_RULES, Config, data_folder
 from .metrics import compare_with_paper, summarize
-from .panel import Panel
+from .panel import BlockPanel, Panel, load_panel, panel_folder
 from .train import STATS, Task, evaluate, fit
 
 
@@ -34,23 +37,43 @@ def default_max_models(cfg: Config, device: torch.device) -> int:
     """How many models to train in one pass, from the measurements in tests/hardware/REPORT.md.
 
     One model reserves about 165 + 2.1 K MB of GPU memory during training (d_model = 32, batches of 126 days).
-    Beyond 36 models the GPU is saturated and larger batches no longer train faster.
+    Beyond 36 models the GPU is saturated and larger batches no longer train faster. On the month blocks (entry_rule
+    history) every row of the 7 or 8 blocks a batch touches gets factors: peaks of 127, 168 and 379 MB per model for
+    K = 8, 30 and 100 against 127, 148 and 271 on the day x slot arrays (measured 2026-11-14), so 150 + 3.5 K MB.
     """
     if device.type != "cuda":
         return 4
     free, _ = torch.cuda.mem_get_info(device)
     days = (cfg.batch_days + cfg.lookback + 1) / 157
     per_model = (165e6 * cfg.d_model / 32 + 2.1e6 * cfg.K) * days
+    if cfg.entry_rule == "history":
+        per_model = (150e6 * cfg.d_model / 32 + 3.5e6 * cfg.K) * days
     if cfg.n_layers > 1:                                                      # whole [.., lookback, d_model] sequences are kept
         per_model += 130e6 * cfg.lookback * (cfg.n_layers - 1) * cfg.d_model / 32 * days
     return int(max(1, min(36, 0.8 * free // per_model)))
 
 
-def run_config(cfg: Config, seeds: list[int], years: list[int], panel: Panel | None, max_models: int | None = None,
+def provenance() -> dict:
+    """The code that is about to train: git commit, whether afsa/ differs from it, and a hash of afsa/*.py (which
+    identifies the code also when the tree is not committed)."""
+    def git(*args: str) -> str:
+        try:
+            return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=20).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    digest = hashlib.sha256()
+    for f in sorted((ROOT / "afsa").glob("*.py")):
+        digest.update(f.read_bytes().replace(b"\r\n", b"\n"))        # the same code hashes the same on any checkout
+    return {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "git_commit": git("rev-parse", "HEAD"),
+            "afsa_differs_from_commit": bool(git("status", "--porcelain", "--", "afsa")), "afsa_sha256": digest.hexdigest()[:16]}
+
+
+def run_config(cfg: Config, seeds: list[int], years: list[int], panel: Panel | BlockPanel | None, max_models: int | None = None,
                tag: str = "", save_weights: bool = False, verbose: bool = True, device: str = "cuda") -> Path:
     """Trains and evaluates the missing (test year, seed) pairs of one configuration. `panel` holds the whole
-    sample of cfg.universe; for a universe that is fixed per training window it is None, and each test year
-    loads its own panel on `device` and trains its seeds in one pass."""
+    sample of cfg.universe (`load_panel(cfg)`: the month blocks for entry_rule history); for a universe that is fixed
+    per training window it is None, and each test year loads its own panel on `device` and trains its seeds in one pass."""
     run_dir = RESULTS_DIR / "runs" / (cfg.name() + (f"_{tag}" if tag else ""))
     run_dir.mkdir(parents=True, exist_ok=True)
     if (run_dir / "config.json").exists():
@@ -65,6 +88,10 @@ def run_config(cfg: Config, seeds: list[int], years: list[int], panel: Panel | N
         chunks = [c for c in ([t for t in todo if t.test_year == y] for y in years) if c]
     else:
         chunks = [todo[lo:lo + max_models] for lo in range(0, len(todo), max_models)]
+    if todo:                                                                 # one entry per call that trains something
+        log = run_dir / "provenance.json"
+        entries = json.loads(log.read_text()) if log.exists() else []
+        log.write_text(json.dumps(entries + [{**provenance(), "models": len(todo)}], indent=2))
     if verbose:
         how = "one test year at a time" if per_window else f"{max_models} at a time"
         print(f"{run_dir.name}: {len(todo)} of {len(seeds) * len(years)} models to train, {how}", flush=True)
@@ -113,8 +140,9 @@ def main() -> None:
         cfg = Config.from_args(args, K=K)
         if cfg.universe in WINDOW_RULES:
             panel = None                                                     # one panel per test year, loaded by run_config
-        elif panel is None or panel.universe != data_folder(cfg.universe, cfg.fill):
-            panel = Panel(data_folder(cfg.universe, cfg.fill), args.device)
+        elif panel is None or panel.universe != panel_folder(cfg):
+            panel = None                                                     # release the previous sample first
+            panel = load_panel(cfg, args.device)
         t0 = time.time()
         run_dir = run_config(cfg, args.seeds, years, panel, args.max_models, args.tag, args.save_weights, device=args.device)
         table = summarize(run_dir, args.first_year, args.last_year)

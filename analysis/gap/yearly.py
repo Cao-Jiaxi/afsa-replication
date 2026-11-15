@@ -32,7 +32,7 @@ def ours(variant: str, K: int) -> pd.Series | None:
     for seed_dir in sorted(run_dir(cfg).glob("seed*")):
         if any(not (seed_dir / f"{y}.npz").exists() for y in range(first, last + 1)):
             return None
-        g = np.log1p(stitch(seed_dir, cfg)["gross"])
+        g = np.log1p(stitch(seed_dir)["gross"])
         per_seed.append(g.groupby(g.index.year).mean() * 252 * 100)
     return pd.concat(per_seed, axis=1).mean(axis=1) if per_seed else None
 

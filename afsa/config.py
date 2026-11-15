@@ -28,10 +28,19 @@ WINDOW_RULES = ("window", "window_train")
 # The same monthly top-500 lists with every input rebuilt from our own WRDS downloads, written by afsa.build_wrds
 # (the arrays start on 1989-11-01, so the loss days of the first window start on 1990-01-02).
 WRDS_UNIVERSES = ("wrds_broad", "wrds_common")
+# Buffered monthly lists from the same downloads (afsa.wrds_universe buffer): each month's top 500 plus the securities of
+# last month's list that still rank within `keep`, so a list holds 500 to `keep` securities. name -> (the list it
+# extends, keep). Written by afsa.build_wrds and afsa.build_history with `keep` slots; trained like the wrds universes.
+BUFFERED_UNIVERSES = {"wrds_broad_buffer600": ("broad", 600)}
+WRDS_BUILDS = WRDS_UNIVERSES + tuple(BUFFERED_UNIVERSES)          # every universe the WRDS builders write
 # Missing characteristics before ranking: "last" carries the stock's last observed value forward (the paper's section
 # 4.1, Ander's X); "none" leaves them missing. Either way a stock still without a value gets rank 0 (the median) and
 # the others are ranked among themselves.
 FILLS = ("last", "none")
+# Which members of a day's universe get a LongConv signal (CLAUDE.md section 7). "run" and "member" read the day x slot
+# arrays, where each lag is the residual of that day's own universe; "history" (decided 2026-11-14) reads the month
+# blocks of afsa.build_history, where the lags of day t are rebuilt over day t's universe (the month's list).
+ENTRY_RULES = ("run", "member", "history")
 
 
 def data_folder(universe: str, fill: str = "last") -> str:
@@ -52,8 +61,13 @@ CHARACTERISTICS: tuple[str, ...] = tuple(c for g in CHAR_GROUPS.values() for c i
 N_CHAR = len(CHARACTERISTICS)          # 39 cross-sectional ranks, one value per stock
 N_LEVEL = N_CHAR + 1                   # 39 cross-sectional medians + rf, one value per day
 LEVEL_NAMES: tuple[str, ...] = tuple(f"med_{c}" for c in CHARACTERISTICS) + ("rf",)
-N_SLOTS = 500                          # at most 500 stocks in the universe on any day
+N_SLOTS = 500                          # at most 500 stocks in the universe on any day (a buffered list: n_slots)
 TRADING_DAYS = 252
+
+
+def n_slots(universe: str) -> int:
+    """Slots of a universe's arrays: N_SLOTS, or `keep` for a buffered list (the largest size it can reach)."""
+    return BUFFERED_UNIVERSES[universe][1] if universe in BUFFERED_UNIVERSES else N_SLOTS
 
 
 def _f(default, help):  # dataclass field with a help string for the CLI
@@ -63,9 +77,10 @@ def _f(default, help):  # dataclass field with a help string for the CLI
 @dataclass(frozen=True)
 class Config:
     # ---- data and protocol -------------------------------------------------------------------
-    universe: str = _f("broad", "universe: broad (monthly top 500, main), common (US common stocks only), window / window_train (500 fixed per training window), or wrds_broad / wrds_common (rebuilt from WRDS by afsa.build_wrds)")
+    universe: str = _f("broad", "universe: broad (monthly top 500, main), common (US common stocks only), window / window_train (500 fixed per training window), wrds_broad / wrds_common (rebuilt from WRDS by afsa.build_wrds), or wrds_broad_buffer600 (each month's top 500 plus last month's members down to rank 600)")
     train_years: int = _f(8, "length of the rolling training window, in calendar years")
     lookback: int = _f(30, "number of lagged daily residuals fed to the sequence model")
+    entry_rule: str = _f("run", "which members get a signal: run (in the universe on each of the `lookback` days before), member (every member; lags outside the universe are zero residuals) or history (lags rebuilt over the day's universe from the month blocks of afsa.build_history; a signal once listed for more than `lookback` trading days with annual accounts entered)")
     # ---- attention factors -------------------------------------------------------------------
     K: int = _f(8, "number of attention factors")
     d_x: int = _f(32, "dimension of the characteristic embedding and of the queries")
@@ -88,9 +103,12 @@ class Config:
     lambda_var: float = _f(100.0, "weight of the explained-variance term")
     sharpe_days: float = _f(252.0, "the Sharpe term is scaled by sqrt(sharpe_days): 252 = annualized, 1 = daily")
     rf_hurdle: bool = _f(False, "Sharpe term on raw returns minus the risk-free rate, as the paper prints it (default: stock-by-stock excess returns)")
-    cost_trade: float = _f(5e-4, "cost per unit of turnover")
-    cost_short: float = _f(1e-4, "cost per unit of short exposure per day")
+    cost_trade: float = _f(5e-4, "cost per unit of turnover in the training objective (results are always scored at the paper's 5 bp: afsa.metrics)")
+    cost_short: float = _f(1e-4, "cost per unit of short exposure per day in the training objective (scored at the paper's 1 bp)")
     ev_min_days: int = _f(21, "a stock enters the explained-variance term if it is in the universe on at least this many days of the batch")
+    # ---- trading layer (CLAUDE.md section 7; off at the defaults: the book is the target) ----------
+    band: float = _f(0.0, "no-trade band inside the model: each day the book skips a stock whose gap to the target is at most `band` and trades the rest of the gap less `band`; return and costs are the book's (0 = no layer)")
+    band_eta: float = _f(1.0, "share of the remaining gap the book trades each day (1 = all of it)")
     # ---- optimization -------------------------------------------------------------------------
     epochs: int = _f(30, "passes over the training window")
     batch_days: int = _f(126, "consecutive trading days per batch")
@@ -108,14 +126,20 @@ class Config:
         unknown = set(self.drop_chars) - set(CHARACTERISTICS)
         if unknown:
             raise ValueError(f"unknown characteristics {sorted(unknown)}; choose from {list(CHARACTERISTICS)}")
-        if self.universe not in UNIVERSES and self.universe not in WINDOW_RULES and self.universe not in WRDS_UNIVERSES:
-            raise ValueError(f"unknown universe {self.universe!r}; choose from {list(UNIVERSES) + list(WINDOW_RULES) + list(WRDS_UNIVERSES)}")
+        if self.universe not in UNIVERSES and self.universe not in WINDOW_RULES and self.universe not in WRDS_BUILDS:
+            raise ValueError(f"unknown universe {self.universe!r}; choose from {list(UNIVERSES) + list(WINDOW_RULES) + list(WRDS_BUILDS)}")
         if self.fill not in FILLS:
             raise ValueError(f"unknown fill rule {self.fill!r}; choose from {list(FILLS)}")
+        if self.entry_rule not in ENTRY_RULES:
+            raise ValueError(f"entry_rule must be one of {list(ENTRY_RULES)}")
+        if self.entry_rule == "history" and self.universe not in WRDS_BUILDS:
+            raise ValueError(f"entry_rule history reads the month blocks of afsa.build_history, which exist for {list(WRDS_BUILDS)} only")
         if self.solve_dtype not in ("float64", "float32"):
             raise ValueError("solve_dtype must be float64 or float32")
         if self.lr_schedule not in ("constant", "cosine"):
             raise ValueError("lr_schedule must be constant or cosine")
+        if self.band < 0 or not 0 < self.band_eta <= 1:
+            raise ValueError("band must be at least 0 and band_eta in (0, 1]")
         if min(self.K, self.d_x, self.d_model, self.n_layers, self.lookback, self.batch_days, self.epochs) < 1:
             raise ValueError("K, d_x, d_model, n_layers, lookback, batch_days and epochs must be at least 1")
 

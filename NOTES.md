@@ -143,3 +143,146 @@ Built by `afsa.chars_market`, `afsa.chars_accounting` and `afsa.build_wrds`, the
 - Ander's Rel2High uses the last 252 trading rows; ours uses 12 calendar months, and equals the panel on all 1,254 differing rows that are in it. His Beta departs from the panel in 1989–1990.
 - D2A is missing for about four fifths of financial firms until 1993 (Compustat has no DP for them), so its coverage changes inside the first training window.
 - The companion code's inputs are not CPZ's: quarterly accounts with no reporting lag, ranks in [−1, 1], differenced medians, a spread feature that is the same for every stock, and a turnover that looks ahead within the month (read only; `training_data.md`).
+
+## 7. Month blocks for the rebuilt-history entry rule (`afsa.build_history`, 2026-11-14)
+
+**Why.** Under the current rule (`entry_rule = run`), a member gets a LongConv signal only after 30 consecutive days in the universe. Each lag is its residual from that day's own projection. A stock that entered fewer than 30 days ago has no residuals for its days before entry, because the day × slot arrays hold nothing for it then, so it gets no signal (3.76% of broad member stock-days from 1990-01-02). The decided rule (CLAUDE.md §7) recomputes the 30 lags over day t's universe, the month's list, including the days before a stock entered. On a March day every lag day, January and February ones included, is computed over March's list.
+
+**Layout** (`Data\TrainingData\history\wrds_<universe>_fill-none\`, 14 arrays + `meta.json`; the docstring of `afsa.build_history` defines each):
+- one block per holding month, 1989-11 to 2025-12 (434); its slots are the month's list of 500, sorted;
+- rows: the 30 trading days before the month's first day, then its 15–23 days (53 with padding); the calendar starts on 1989-09-20;
+- `member`, `ranks` [434, 53, 500, 39] float32, `levels`, `ret`, `listed`, `run`, `accounts`, `accounts_post`.
+
+**Example: March 2000.** The lookback rows run from 2000-01-18 to 2000-02-29 (10 January days, 20 February days). 46 of March's 500 securities were not on February's list, 60 not on January's. On 2000-01-18, 494 of March's list traded, 54 of them outside that day's own universe. On March 1, 435 members get a signal under the current rule and 494 under the decided one.
+
+**Checks** (13, all passing for both universes, plus 5 notes, in `meta.json`):
+- the daily file has no gap inside a security's life, so `listed` counts the days since listing;
+- the months' own rows equal the `build_wrds` arrays on every stock-day (broad: 4,547,826), bit for bit: members, ranks, medians, rf input, returns and run;
+- the rows of 12 blocks (611 rows, 360 of them lookback) equal a pandas recomputation from the whole table and the raw daily file (ranks within 1.5e-8);
+- a member with `listed` > 30 has a CRSP row on each of its 30 lag rows;
+- the accounts flags never turn false;
+- no missing value, and ranks are centred;
+- Ret_D1 on lookback rows ranks the previous day's return (rank correlation 1.0000 with s−1, −0.018 with s).
+
+**Coverage** (member stock-days from 1990-01-02):
+
+| | Broad | Common |
+| --- | --- | --- |
+| Current rule (31 days in the universe) | 96.243% | 96.390% |
+| Decided rule (listed > 30 and accounts) | 99.787% | 99.843% |
+| Decided, counting only fiscal years that end after listing | 98.289% | 98.362% |
+| No signal: listed ≤ 30 days / no accounts / both | 4,949 / 4,186 / 513 | 4,575 / 2,227 / 325 |
+| Gain a signal / lose one, against the current rule | 164,117 / 3,680 | 158,247 / 1,988 |
+| Securities with no accounts on any member day | 6: PERMNOs 16267, 24164, 75142, 75936, 77735, 89457 (1,389 stock-days) | 3: 16267, 69729, 93194 (585) |
+
+- **Lags of the stock-days that gain a signal:** 4,923,510 lag rows (broad), 502 of them on a day without a CRSP return (counted as 0).
+- **How much the cross-section moves a rank.** On lookback rows, for securities on both lists, the rank over the block's list differs from the rank in that day's own universe by 0.0045 on average (common: 0.0043).
+- **The largest differences**, up to 0.11 (LME), come in months with many entrants. Lists change by 14.4 securities a month on average, and by 30–46 in 2000 and late 2008. A March 2000 day in May 2000's block has 56 securities that were not on March's list, mostly smaller then, so a stock near the bottom of March's list moves up 54 places.
+
+**What the model needs beyond the day × slot arrays:**
+1. Returns and characteristics of the days before a member entered: in the blocks.
+2. Ranks over day t's list on lag days in earlier months: in the blocks. On the month's own days they equal today's ranks.
+3. For the exception: the trading days since listing (`listed`) and the accounts flag: in the blocks.
+4. Each day's weights come from the block of its own month, so the weights of the day before a month's first day (for that day's cost) come from the previous month's block.
+5. Unchanged: rf; the medians (inert) and their training-window statistics (own rows equal the arrays); explained variance and the loss days (own rows); the first test day's trade from the previous model.
+6. Compute: residuals over every block a batch touches (7 or 8 × 53 rows for a 126-day batch, against 157 rows today); LongConv is unchanged. Measured on the RTX 5080 (2026-11-14, 16 models per pass): a step takes 1.0 / 1.3 / 1.7 times as long for K = 8 / 30 / 100, and the peak memory per model is 127 / 168 / 379 MB against 127 / 148 / 271. All 434 blocks take 1.77 GB on the GPU (the day arrays 0.73 GB), which still leaves room for 36 models at K = 30, so `BlockPanel` loads every month by default (`first_year` / `last_year` limit it).
+
+**Model** (2026-11-14): `afsa.panel.BlockPanel` serves the blocks, and `AFSAModel._forward_blocks` computes factors and residuals on every row of the blocks a batch touches, each over its own month's list. Run it with `--universe wrds_broad --fill none --entry_rule history` (`Config.entry_rule` stays `run`). Checks (`tests/test_blocks.py`): on a fixed list it trains exactly as the day × slot path, dropout included; on a changing list (entrants with a history, a new listing, a delisting, missing accounts) it equals a recomputation that builds each lag row by row; no look-ahead; models in one pass are independent; on the blocks on disk its own-row residuals equal the day arrays' (2008, float64, to 5e-15).
+
+**First run** (2026-11-14): K = 30, ridge 1e-4, training at 5 bp, seeds 0–2. Validation 1996–1997 (`attn_K030_universe-wrds_broad_train_years-6_entry_rule-history_ridge-0.0001_fill-none`) and 1998–2025 (`attn_K030_universe-wrds_broad_entry_rule-history_ridge-0.0001_fill-none`): 90 models in 2.6 minutes. Against the 30-day wait with the same setting and arrays (seed averages; pooled = the paired block bootstrap of `analysis\gap\paired_test.py` on the seed-mean net series):
+
+| Period | SR, history / wait | SR_net, history / wait | Pooled SR_net difference [95%] | Turnover | Beta |
+| --- | --- | --- | --- | --- | --- |
+| 1996–1997 (validation) | 12.69 / 11.73 | 8.00 / 7.52 | +0.53 [−0.20, +1.18] | 0.83 / 0.75 | 0.03 / 0.04 |
+| 1998–2021 | 3.68 / 3.72 | 1.23 / 1.18 | +0.05 [−0.10, +0.22] | 0.68 / 0.67 | 0.07 / 0.05 |
+| 1998–2005 | 6.94 / 6.55 | 3.64 / 3.42 | +0.25 [−0.00, +0.51] | 0.87 / 0.81 | 0.01 / 0.01 |
+| 2006–2013 | 3.05 / 3.15 | 0.02 / 0.06 | −0.04 [−0.32, +0.27] | 0.74 / 0.74 | 0.04 / 0.03 |
+| 2014–2021 | 1.73 / 1.82 | 0.27 / 0.18 | +0.10 [−0.14, +0.34] | 0.45 / 0.46 | 0.18 / 0.15 |
+| 2022–2025 | 0.89 / 0.88 | −0.33 / −0.40 | +0.06 [−0.46, +0.59] | 0.35 / 0.30 | 0.13 / 0.10 |
+
+- The rule moves net return by year in both directions (from −2.8 to +4.7 points, 2008 and 2000) and adds 0.4 points a year net over 1998–2021, with 0.2 points more volatility. The two rules' daily gross returns correlate at 0.92.
+- Not separated yet: what comes from the rebuilt lags (over the month's list) and what from the signals the rule adds (member stock-days with a signal: 96.2% → 99.8%). A block run gated by the old rule (`run` > 30) would split them; it needs a small option that is not built.
+
+## 8. Buffered list (`wrds_broad_buffer600`, 2026-11-14)
+
+**Rule** (the user's proposal; `afsa.wrds_universe.buffered`). Holding month m takes the top 500 by market cap at the end of m−1, plus every security of m−1's buffered list that ranks within 600. Eligibility and ranking are those of the plain lists (`ranked`; the refactored `build` reproduces `broad.parquet` and `common.parquet` exactly). The rule starts from the plain list of 1989-11, so every buffered security entered through a plain list, and the daily download (PERMNOs ever on a plain list) holds its data.
+
+**Why the list grows.** With 500 fixed, every top-500 stock cannot enter while incumbents ranked 501–600 stay. The model takes any number of stocks a day (the softmax runs over the day's stocks, ranks scale to [−0.5, 0.5]), so the list holds 500 to 600 and the arrays get 600 slots (`config.n_slots`), the empty ones last (PERMNO −1).
+
+**Numbers** (broad, holding months 1989-12 to 2025-12):
+- List size 500 in 1989-11, 512 in 1990-01, 536 by 1990-06, then 524–564 (mean 545 over 1992–2025). 19,144 stock-months are held through the band.
+- Securities entering a month: 6.6 instead of 14.4; leaving: 6.4 instead of 14.4.
+- Under the plain rule, securities leave a list 5,608 times in 1990–2021, and 3,343 entries are securities coming back within 12 months of leaving.
+- Other bands (1990–2021 simulation): 550 → mean size 523, 8.6 entries a month; 700 → 581, 5.6.
+
+**Turnover attributable to list changes** (measured 2026-11-14 on the saved daily weights of the K = 30 baseline, `broad`, seeds 0–2, 1998–2021):
+- Daily turnover 0.669: 0.892 on a month's first day, 0.658 on other days.
+- On a month's first day, closing the 13.7 leaving names costs 0.044, opening the 14.9 entering names 0.064, and the stocks in both trade 0.784 (0.126 above an ordinary day, mostly the 35 monthly characteristics updating).
+- Spread over all days, exits and entries are 0.71% of turnover; everything extra on month starts is 1.53%. Halving list churn saves about 0.35% of turnover, about 0.03% a year of return.
+
+**Built** (all checks pass):
+- `Data\WRDS\universe\broad_buffer600.parquet`: 236,144 stock-months, the columns of the plain lists plus `buffered` (on the list only through the band).
+- `Data\TrainingData\wrds_broad_buffer600_fill-none\` (`afsa.build_wrds`, 904 MB): 4,949,552 stock-days. Under the current 30-day rule, 1.70% of member stock-days from 1990-01-02 get no signal (plain list: 3.76%).
+- `history\wrds_broad_buffer600_fill-none\` (`afsa.build_history`, 2.1 GB): 13 checks. The own rows equal the day arrays on every stock-day. Lookback rows of 12 blocks equal a pandas recomputation from the whole table. Under the decided rule, 99.80% of member stock-days from 1990-01-02 get a signal (current rule on the same list: 98.30%). Lookback ranks move by 0.0029 on average against each day's own universe (plain list: 0.0045).
+- Smoke run through `afsa.run.run_config`: K = 30, 2 epochs, test year 1998, 0.8 GB of GPU memory at the peak, scored with the buffered day arrays' market row.
+
+**Caveats.** It departs from the paper's "500 largest": a robustness variant, judged on 1996–1997 (CLAUDE.md §8), never a Table 2 row. The flat 5 bp cost does not charge more for the smaller stocks ranked 501–600. Its runs' market row and beta are against the buffered list's equal-weighted return. `tests\test_buffered.py` covers the rule, the 600-slot builders against loop references, the configuration and the files on disk.
+
+**First run** (2026-11-14; `analysis\gap\buffer.py` → `analysis\gap\BUFFER.md`). K = 30, ridge 1e-4, training at 5 bp, 30 epochs, rebuilt-history entry, seeds 0–2, 1996–2025: 90 models in 3 minutes. It is compared with the plain list's run at the same setting (SCAN_HISTORY.md). Figures are seed averages; *pooled* is the paired block bootstrap of the pooled net series, buffered minus plain:
+
+| Period | SR, buffered / plain | SR_net, buffered / plain | Pooled SR_net difference [95%] | Turnover |
+| --- | --- | --- | --- | --- |
+| 1996–1997 (validation) | 13.21 / 12.69 | 8.42 / 8.00 | +0.45 [−0.11, +1.02] | 0.84 / 0.83 |
+| 1998–2021 | 3.70 / 3.68 | 1.31 / 1.23 | +0.08 [−0.03, +0.21] | 0.66 / 0.68 |
+| 1998–2005 | | 3.56 / 3.64 | −0.09 [−0.33, +0.14] | |
+| 2006–2013 | | 0.26 / 0.02 | +0.25 [+0.03, +0.47] | |
+| 2014–2021 | | 0.36 / 0.27 | +0.09 [−0.06, +0.25] | |
+| 2022–2025 | 0.76 / 0.89 | −0.34 / −0.33 | −0.02 [−0.25, +0.23] | 0.30 / 0.35 |
+
+- **Return and risk do not change:** μ 14.65% against 14.68%, σ 3.96% against 3.99%. Beta is 0.07 against either list's equal-weighted market (0.18 for both in 2014–2021). The pooled gross SR difference is +0.02 [−0.11, +0.15]. The paper has SR 3.97, SR_net 2.28 and an implied turnover of 0.47.
+- **Turnover falls by 0.024 a day** (0.685 → 0.661), for every seed (0.656–0.665 against 0.678–0.691). Cost falls by 0.13 bp a day, which is 0.28 points a year more net return (μ_net 5.17% against 4.89%).
+    - List changes explain 0.002 of the drop. Entries fall from 14.9 to 7.0 a month, and closing and opening positions from 0.55% to 0.28% of turnover. On a month's first day only these list trades fall (0.076 → 0.035); stocks on both lists trade as much as before (0.81).
+    - The rest is less trading on other days (0.675 → 0.651), in stocks that stay members.
+- **The securities held through the band** (44 a day) carry 8.8% of the gross exposure and 9.2% of the turnover, and net to about zero (+0.02). They earn 1.08 of the 14.65 points of gross return: 12.3% per unit of exposure, against 14.9% for the top 500.
+- **The gain rests on the flat cost.** At 10 bp per unit of turnover on those securities' trades, the net SR is 1.12, below the plain list's 1.23. The two are equal at 7.1 bp.
+- **Layers:** both lists' validation years choose a band of 4e-4. Ensemble 1.70 against 1.62; ensemble + band 2.08 against 2.01 (pooled +0.08 [−0.04, +0.20]). In 2022–2025, ensemble + band 0.08 against 0.09.
+- **Reading:**
+    - The buffer costs nothing in return or risk and trades a little less. Every gain is inside the noise: of the six net differences above, only 2006–2013 excludes zero.
+    - It does not narrow the gap to the paper, and the gain disappears if the smaller securities cost 2 bp more to trade.
+    - Keep it as a robustness row, not a change of universe.
+
+## 9. The four `broad` datasets from WRDS (2026-11-15)
+
+**Design** (the user's request; CLAUDE.md §7 row of 2026-11-15; `analysis\gap\datasets.py` → `analysis\gap\DATASETS.md`). A 2×2: the plain list (`wrds_broad`) or the buffered one (`wrds_broad_buffer600`), crossed with the 30-day wait or rebuilt history. One setting on all four: K = 30, ridge 1e-4, training at 5 bp, 30 epochs, seeds 0–2, validation 1996–1997, test 1998–2021, extension 2022–2025. Only C (buffered list, 30-day wait) was new: 90 models in about 2 minutes, the first run on the buffered day arrays. Its weights replay the stored results exactly. A comparison, not a selection: Table 2 stays on B.
+
+**Net SR** (the model is the seed average; the layer is the ensemble through the band its own validation years choose, 4e-4 for all four):
+
+| Dataset | Validation | 1998–2021 | 2022–2025 | 1998–2025 | Layer, 1998–2021 | Layer, 2022–2025 |
+| --- | --- | --- | --- | --- | --- | --- |
+| A: plain list, 30-day wait | 7.52 | 1.18 | −0.39 | 0.96 | 1.93 | −0.02 |
+| B: plain list, rebuilt history | 8.00 | 1.23 | −0.33 | 0.99 | 2.01 | +0.09 |
+| C: buffered list, 30-day wait | 8.01 | 1.22 | −0.42 | 0.97 | 1.99 | −0.02 |
+| D: buffered list, rebuilt history | 8.42 | 1.31 | −0.34 | 1.06 | 2.08 | +0.08 |
+
+The ensemble alone: 1.56 / 1.62 / 1.61 / 1.70 on 1998–2021. Gross SR 3.68–3.72 for all four; turnover 0.66–0.68.
+
+**Contrasts** (model, net, pooled paired bootstrap; 1998–2021 unless stated):
+- Rebuilt history: +0.05 [−0.10, +0.22] on the plain list, +0.09 [−0.03, +0.21] on the buffered one.
+- Buffered list: +0.05 [−0.10, +0.19] under the 30-day wait, +0.08 [−0.03, +0.21] under rebuilt history.
+- Interaction (D − C) − (B − A): +0.04 [−0.08, +0.16]. Both changes (D − A): +0.13 [−0.05, +0.34]; 1998–2025 +0.10 [−0.07, +0.28]; validation +0.99 [+0.14, +1.75].
+- Gross, the four are equal on 1998–2021 (every contrast within ±0.04). In 1998–2005 rebuilt history gains +0.43 [+0.15, +0.73] gross on the plain list, and the two changes partly substitute (gross interaction −0.25 [−0.48, −0.03]).
+- The layers show the same pattern: on 1998–2021 the ensemble + band contrasts are within 0.03 of the model's.
+
+**Where it comes from** (the model, 1998–2021, from the saved weights). *Waiting* stock-days are members that rebuilt history gives a signal and the 30-day wait does not:
+- They are 3.78% of member stock-days on the plain list and 1.70% on the buffered one. The buffer halves them because 7.0 securities enter a month instead of 14.9.
+- Under the 30-day wait the model still holds them through the hedge: 7.45% of gross exposure on the plain list (3.98% buffered), losing 0.77 (0.64) points of gross return a year. Under rebuilt history they carry 4.57% (2.12%) and earn +1.00 (+0.65).
+- The other stock-days earn less under rebuilt history: 14.85 → 13.68 points (plain), 14.99 → 14.00 (buffered). Their lags change too, since every lag day of the previous month is recomputed over the current list. So gross return rises only 0.6 (0.3) points, with σ up 0.2 (0.07).
+- List changes are 0.74% of turnover under the wait on the plain list, 0.33% on the buffered one.
+
+**Cost of the buffered list's extra securities** (44 a day, ranks 501–600, 8.8% of gross exposure, 9.2% of turnover). At 10 bp on their trades the net SR is 1.02 for C (A: 1.18) and 1.12 for D (B: 1.23). The break-even is 6.0 bp for C and 7.1 bp for D.
+
+**Reading:**
+- On the test years the four are within 0.13 net SR of each other, and no single contrast excludes zero; the same holds in 2022–2025. Validation and test rank them in the same order: D, then B and C about equal, then A.
+- The two changes add up rather than overlap: the buffer halves the waiting stock-days, yet rebuilt history gains at least as much on the buffered list. They substitute only in 1998–2005, when entrants were most frequent.
+- Rebuilt history's gain is real on the entrants (+1.8 points of gross return from the waiting stock-days on the plain list), but it is mostly offset elsewhere.
+- None of them narrows the gap to the paper (2.28 net). The buffer's gain rests on the flat 5 bp, so the decision stands: Table 2 on B, the buffered list a robustness row.

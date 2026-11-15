@@ -5,6 +5,7 @@
     python -m afsa.build_wrds --fill last             # the paper's section 4.1 instead -> wrds_broad\\, wrds_common\\
     python -m afsa.build_wrds --check-only            # run the checks, write nothing
     python -m afsa.build_wrds --compare               # our ranks against Ander's arrays, per characteristic (a bug detector, 3 minutes)
+    python -m afsa.build_wrds --universe wrds_broad_buffer600   # a buffered list (config.BUFFERED_UNIVERSES): 600 slots
 
 Inputs (nothing of Ander's is used to build):
     Data\\WRDS\\raw\\crsp_index_daily.parquet        the trading calendar (the days of the CRSP market index)
@@ -75,8 +76,8 @@ import pandas as pd
 
 from .build_data import Checks
 from .build_window import DAILY, MONTHLY, ffill, ranks_and_medians
-from .config import (CHARACTERISTICS, FILLS, LEVEL_NAMES, N_CHAR, N_LEVEL, N_SLOTS, SOURCE_DIR, TRAIN_DATA_DIR, WRDS_DIR,
-                     WRDS_UNIVERSES, Config, data_folder)
+from .config import (CHARACTERISTICS, FILLS, LEVEL_NAMES, N_CHAR, N_LEVEL, N_SLOTS, SOURCE_DIR, TRAIN_DATA_DIR, WRDS_BUILDS,
+                     WRDS_DIR, WRDS_UNIVERSES, Config, data_folder, n_slots)
 from .panel import membership
 
 RAW_DIR = WRDS_DIR / "raw"
@@ -268,19 +269,19 @@ def assemble(src: dict, universe: str) -> dict:
     month = src["month_of_day"][days]
     on_list, u = universe_lists(universe, src)
     member = on_list[month] & src["has_row"][days]
-    n_per_day = member.sum(axis=1)
-    if n_per_day.max() > N_SLOTS:
-        raise ValueError(f"{n_per_day.max()} securities in the universe on one day: more than {N_SLOTS} slots")
+    n_per_day, width = member.sum(axis=1), n_slots(universe)
+    if n_per_day.max() > width:
+        raise ValueError(f"{n_per_day.max()} securities in the universe on one day: more than {width} slots")
     day, col = np.nonzero(member)                                              # by day, then PERMNO
     slot = np.arange(len(day)) - np.concatenate([[0], np.cumsum(n_per_day)[:-1]])[day]
     T = len(days)
-    permno = np.full((T, N_SLOTS), -1, dtype=np.int32)
+    permno = np.full((T, width), -1, dtype=np.int32)
     permno[day, slot] = src["permnos"][col]
     R = src["ret"][days]
-    ret = np.zeros((T, N_SLOTS), dtype=np.float32)
+    ret = np.zeros((T, width), dtype=np.float32)
     ret[day, slot] = np.nan_to_num(R[day, col], nan=0.0)
 
-    ranks = np.zeros((T, N_SLOTS, N_CHAR), dtype=np.float32)
+    ranks = np.zeros((T, width, N_CHAR), dtype=np.float32)
     levels = np.zeros((T, N_LEVEL), dtype=np.float32)
     n_value = np.zeros((T, N_CHAR), dtype=np.int32)
     for k, c in enumerate(CHARACTERISTICS):
@@ -393,8 +394,9 @@ def month_constancy(a: dict, src: dict) -> dict:
 
 def build(universe: str = "wrds_broad", fill: str = "none", check_only: bool = False, src: dict | None = None) -> bool:
     t0 = time.time()
-    if universe not in WRDS_UNIVERSES:
-        raise ValueError(f"unknown universe {universe!r}; choose from {WRDS_UNIVERSES}")
+    if universe not in WRDS_BUILDS:
+        raise ValueError(f"unknown universe {universe!r}; choose from {WRDS_BUILDS}")
+    width = n_slots(universe)
     ck = Checks()
     files = [RAW_DIR / "crsp_index_daily.parquet", RAW_DIR / "crsp_dsf_v2.parquet", RAW_DIR / "ff_factors_monthly.parquet",
              RAW_DIR / "ff_factors_daily.parquet", UNIVERSE_DIR / f"{universe.removeprefix('wrds_')}.parquet", MARKET_FILE, ACCOUNTING_FILE]
@@ -427,10 +429,12 @@ def build(universe: str = "wrds_broad", fill: str = "none", check_only: bool = F
     last_day_before = pd.Series(src["dates"][days - 1], index=cal_months).groupby(level=0).first()   # day before each month's first day
     formation = u.groupby(um)["formation_date"].first()
     same_formation = formation.reindex(last_day_before.index).to_numpy().astype("datetime64[D]") == last_day_before.to_numpy().astype("datetime64[D]")
-    ck.add("a list of 500 for every month of the calendar, formed on the last trading day of the month before",
-           bool((per_month.reindex(cal_months.unique()) == N_SLOTS).all() and same_formation.all()),
-           f"{len(per_month)} monthly lists, {um.min()} .. {um.max()}")
-    ck.add("at most 500 stocks per day", n_per_day.max() <= N_SLOTS,
+    sizes = per_month.reindex(cal_months.unique())
+    ck.add(f"a list of {N_SLOTS}{'' if width == N_SLOTS else f' to {width}'} for every month of the calendar, formed on the last "
+           "trading day of the month before",
+           bool(((sizes == N_SLOTS).all() if width == N_SLOTS else sizes.between(N_SLOTS, width).all()) and same_formation.all()),
+           f"{len(per_month)} monthly lists, {um.min()} .. {um.max()}" + ("" if width == N_SLOTS else f"; sizes {sizes.min()} to {sizes.max()}"))
+    ck.add(f"at most {width} stocks per day", n_per_day.max() <= width,
            f"min {n_per_day.min()}, mean {n_per_day.mean():.1f}, max {n_per_day.max()}; {n_rows:,} stock-days, "
            f"{int(n_per_day[years >= 1990].sum()):,} from 1990")
     listed_days = int((np.repeat(per_month.reindex(cal_months.unique()).to_numpy(), np.unique(cal_months.asi8, return_counts=True)[1])).sum())
@@ -441,8 +445,8 @@ def build(universe: str = "wrds_broad", fill: str = "none", check_only: bool = F
     sorted_slots = bool((np.diff(np.where(permno >= 0, permno, np.iinfo(np.int32).max), axis=1) >= 0).all()
                         and ((permno >= 0).sum(1) == n_per_day).all())
     ck.add("slots hold the day's members sorted by PERMNO, filled from slot 0", sorted_slots, f"{len(arr['permnos']):,} PERMNOs are in the universe at some point")
-    flag = ANDER_FLAG[universe]
-    if (SOURCE_DIR / "crsp_daily.parquet").exists():
+    flag = ANDER_FLAG.get(universe)                                            # none for a buffered list
+    if flag and (SOURCE_DIR / "crsp_daily.parquet").exists():
         theirs = pd.read_parquet(SOURCE_DIR / "crsp_daily.parquet", columns=["permno", "date"], filters=[(flag, "==", True)])
         from90 = dates[day] >= FIRST_LOSS_DAY
         ours = pd.MultiIndex.from_arrays([dates[day][from90], src["permnos"][col][from90]])
@@ -485,9 +489,9 @@ def build(universe: str = "wrds_broad", fill: str = "none", check_only: bool = F
            f"first row: the rate of {src['dates'][days[0] - 1]}")
 
     # ---------------------------------------------------------------- the 79 inputs
-    shapes = {"dates": ((T,), "datetime64[D]"), "permno": ((T, N_SLOTS), "int32"), "slot_of": ((T, len(arr["permnos"])), "int16"),
-              "ranks": ((T, N_SLOTS, N_CHAR), "float32"), "levels": ((T, N_LEVEL), "float32"), "ret": ((T, N_SLOTS), "float32"),
-              "rf": ((T,), "float64"), "run": ((T, N_SLOTS), "int16"), "permnos": ((len(arr["permnos"]),), "int32")}
+    shapes = {"dates": ((T,), "datetime64[D]"), "permno": ((T, width), "int32"), "slot_of": ((T, len(arr["permnos"])), "int16"),
+              "ranks": ((T, width, N_CHAR), "float32"), "levels": ((T, N_LEVEL), "float32"), "ret": ((T, width), "float32"),
+              "rf": ((T,), "float64"), "run": ((T, width), "int16"), "permnos": ((len(arr["permnos"]),), "int32")}
     ck.add("array shapes and dtypes are those of afsa.build_data", all(arr[k].shape == s and str(arr[k].dtype) == d for k, (s, d) in shapes.items()),
            f"ranks {list(ranks.shape)}, levels {list(levels.shape)}")
     ck.add("no missing value in any array", bool(np.isfinite(ranks).all() and np.isfinite(levels).all() and np.isfinite(ret).all() and np.isfinite(rf).all()))
@@ -576,7 +580,7 @@ def build(universe: str = "wrds_broad", fill: str = "none", check_only: bool = F
         "universe": universe, "fill": fill, "built": datetime.now().isoformat(timespec="seconds"), "builder": "afsa.build_wrds",
         "sources": {str(p.relative_to(WRDS_DIR)).replace("\\", "/"): {"bytes": p.stat().st_size,
                     "modified": datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds")} for p in files},
-        "n_days": int(T), "n_slots": N_SLOTS, "n_stocks": int(len(arr["permnos"])), "n_stock_days": int(n_rows),
+        "n_days": int(T), "n_slots": width, "n_stocks": int(len(arr["permnos"])), "n_stock_days": int(n_rows),
         "n_stock_days_from_1990": int(n_per_day[years >= 1990].sum()),
         "first_day": str(dates[0]), "last_day": str(dates[-1]), "first_loss_day": str(dates[start]), "lookback_days_before_1990": int(start),
         "characteristics": list(CHARACTERISTICS), "levels": list(LEVEL_NAMES),
@@ -677,7 +681,8 @@ def compare(universe: str = "wrds_broad") -> pd.DataFrame:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--universe", nargs="*", default=list(WRDS_UNIVERSES), choices=list(WRDS_UNIVERSES), help="[default: both]")
+    p.add_argument("--universe", nargs="*", default=list(WRDS_UNIVERSES), choices=list(WRDS_BUILDS),
+                   help="[default: wrds_broad and wrds_common; a buffered list such as wrds_broad_buffer600 only when named]")
     p.add_argument("--fill", default="none", choices=FILLS,
                    help="missing characteristics: none = left at rank 0, last = the last observed value first (paper section 4.1) [default: none]")
     p.add_argument("--check-only", action="store_true", help="run the checks without writing anything")

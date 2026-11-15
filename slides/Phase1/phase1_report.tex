@@ -1,0 +1,1561 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=24mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,longtable,array,tabularx}
+\usepackage{graphicx,xcolor}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\definecolor{SBred}{RGB}{153,0,0}
+\hypersetup{colorlinks=true,linkcolor=SBred,urlcolor=SBred,citecolor=SBred,pdftitle={Phase 1 report: Attention Factors for Statistical Arbitrage}}
+\setlength{\parskip}{5pt}
+\setlength{\parindent}{0pt}
+\setlength{\emergencystretch}{3em}
+\setlist{itemsep=3pt,topsep=4pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textcolor{SBred}{Attention Factors for Statistical Arbitrage}}
+\fancyhead[R]{\small Phase 1}
+\fancyfoot[C]{\thepage}
+\setlength{\headheight}{14pt}
+\newcommand{\R}{\mathbb R}
+\newcommand{\Var}{\operatorname{Var}}
+\newcommand{\softmax}{\operatorname{softmax}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\E}{\mathbb E}
+\title{\textcolor{SBred}{\textbf{Attention Factors for Statistical Arbitrage}}\\[5pt]\large Phase 1: model, data and training report}
+\author{Jiaxi Cao\\\small Stony Brook University}
+\date{AMS 520: Machine Learning in Quantitative Finance\\Fall 2026}
+\begin{document}
+\maketitle
+\begin{center}
+\IfFileExists{assets/sbu_logo.png}{\includegraphics[width=50mm]{assets/sbu_logo.png}}{}
+\end{center}
+\noindent\textbf{Purpose.} Explain the paper before a 20-minute introductory project talk. The detailed characteristic recipes and reproduction choices belong in this report and the deck's backup slides. Published results, local Try1 evidence and proposed future research are identified separately.
+
+\noindent\textbf{Source convention.} ``Paper'' means Epstein, Wang, Choi and Pelger (2025), DOI \href{https://doi.org/10.1145/3768292.3770398}{10.1145/3768292.3770398}. ``Reference'' means a construction delegated to a cited primary source. ``Try1 choice'' means a recorded implementation rule, not an unpublished setting recovered from the authors. The linked ChatGPT discussions guide what to explain, while the paper and its references control factual claims.
+
+% Report body: requires amsmath, amssymb, booktabs, longtable, array, hyperref.
+% Equation numbers below belong to this report. Most equations in paper §3
+% are unnumbered; its attention-weight equation is Equation (1).
+\section{From the classical factor model to a tradable residual}
+\label{sec:classical-model}
+
+The starting point is the conditional factor model in Section 3.1 of
+\href{https://doi.org/10.1145/3768292.3770398}{Epstein, Wang, Choi, and Pelger (2025), \emph{Attention Factors for Statistical Arbitrage}}:
+\begin{equation}
+ R_{i,t}=\beta_{i,t-1}^{\mathsf T}F_t+\epsilon_{i,t},
+ \qquad R_t=B_{t-1}F_t+\epsilon_t.
+ \label{eq:classical}
+\end{equation}
+Here $R_t\in\mathbb R^N$ contains daily stock returns, $F_t\in\mathbb R^K$ contains
+factor returns, and $B_{t-1}\in\mathbb R^{N\times K}$ has row
+$\beta_{i,t-1}^{\mathsf T}$. The paper writes this matrix as
+$\beta_{t-1}^{\mathsf T}$; using $B$ avoids repeatedly transposing the loading
+matrix. A factor can represent a broad market movement, a sector movement,
+or a smaller common pattern. A loading says how strongly a firm participates
+in that movement. The subscript $t-1$ matters: the exposures used to explain or
+trade date-$t$ returns must be known before those returns occur.
+
+In a conventional risk decomposition, $B_{t-1}F_t$ is the systematic component
+and $\epsilon_t$ is the remaining, often called idiosyncratic, component.
+The paper changes the \emph{use} of the remainder. A stock can be compared
+with a portfolio that replicates its common-factor exposure. The return
+difference between the stock and that replicating portfolio becomes the
+candidate trading instrument. If its historical fluctuations contain a
+predictable temporary deviation, buying or selling this relative position
+may earn a profit.
+
+This does not turn every residual into an arbitrage profit. A residual can
+contain firm-specific news, omitted risk, estimation error, persistent
+structural change, and unpredictable noise. The model must learn which
+patterns, if any, survive the costs of trading. ``Statistical arbitrage'' here
+means a risky, statistically motivated relative-value strategy. The
+factor decomposition is an identity conditional on the constructed
+factors; predictability and profitability are separate empirical questions.
+
+\subsection{What it means to represent a firm by sectors}
+\label{sec:soft-sector}
+
+It is useful to think of a firm as a vector of exposures rather than a
+single industry label. An energy company may share both an energy pattern
+and a financing pattern with other firms. Two firms with similar exposure
+vectors can be compared after their common movements are removed. The
+project's phrase ``write firms equivalent to sectors'' is best expressed
+as \emph{represent firms by learned factor exposures, which can resemble
+soft sector coordinates}.
+
+The factors are learned without supplying sector labels as inputs. They
+need not correspond one-to-one to the familiar sectors, and a firm can
+participate in several factors. Figure 3 of the paper visualizes the
+learned loading vectors with t-SNE and colors them by industry afterward.
+The sector-like clusters support an interpretation of the learned
+similarity; the visualization is not a sector classifier and is not
+evidence that every residual is a mispricing.
+
+There are two different matrices to keep separate. The attention matrix
+$A_{t-1}$ assigns firms to \emph{factor portfolios}; its rows are positive
+weights summing to one. The loading matrix $B_{t-1}$ describes each firm's
+exposure to those factors. A loading is not a softmax probability: it
+can be negative and its row need not sum to one.
+
+\subsection{A two-firm example}
+\label{sec:two-firm}
+
+Consider two firms exposed to the same movement and one equal-weight
+factor. For illustration only, set the ridge penalty to zero:
+\begin{equation}
+ A=\begin{pmatrix}1/2&1/2\end{pmatrix},\quad
+ F_t=\tfrac12(R_{1,t}+R_{2,t}),\quad
+ B=A^{\mathsf T}(AA^{\mathsf T})^{-1}
+   =\begin{pmatrix}1\\1\end{pmatrix}.
+ \label{eq:two-firm-factors}
+\end{equation}
+Then
+\begin{equation}
+ \epsilon_{1,t}=\tfrac12(R_{1,t}-R_{2,t}),\qquad
+ \epsilon_{2,t}=-\epsilon_{1,t}.
+ \label{eq:two-firm-residual}
+\end{equation}
+If their returns today are $1\%$ and $3\%$, the common factor return is
+$2\%$ and the residual returns are $-1\%$ and $+1\%$. A positive position
+in the first residual means buying one-half unit of firm 1 and selling
+one-half unit of firm 2. It earns $\tfrac12(R_1-R_2)$ on the next day.
+It earns a profit only if the future relative move has the favorable sign.
+Today's underperformance alone does not guarantee that result. This
+simple spread is the special case of the paper's much larger mimicking
+portfolios.
+
+\section{Literature path and the phase-1 scope}
+\label{sec:literature-path}
+
+The initial literature survey can be organized around the three
+decisions in statistical arbitrage: what to hedge, how to detect a
+temporary relative deviation, and how to trade it. Section 2 of the
+target paper positions its contribution within this progression.
+
+\begin{center}
+\small
+\begin{tabular}{p{0.24\linewidth}p{0.28\linewidth}p{0.39\linewidth}}
+\toprule
+Approach & Similarity / residual & Temporal policy and boundary\\
+\midrule
+Classical factor models
+& Market, size, value, and other risk exposures
+& A risk decomposition alone does not supply a residual trading rule\\
+PCA + OU mean reversion
+& Statistical common movements estimated from returns
+& Parametric residual dynamics and thresholds; factor fitting and trading are separate\\
+IPCA (Kelly--Pruitt--Su, 2019)
+& Characteristics instrument time-varying latent exposures
+& Makes the factor model conditional, but does not jointly optimize a residual strategy after costs\\
+Deep Learning Statistical Arbitrage
+& Prior factor extraction, including PCA/IPCA-type residuals
+& Flexible learned temporal signal and policy; factor extraction remains a separate stage\\
+Attention Factors (2025)
+& Characteristic-based, learned cross-sectional factor portfolios
+& Learns factors and LongConv policy together against net Sharpe plus explained variance\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\href{https://doi.org/10.1080/14697680903124632}{Avellaneda and Lee (2010)}
+provide the classical PCA/OU reference: construct residual spreads,
+estimate mean-reverting dynamics, and apply trading thresholds.
+\href{https://doi.org/10.1016/j.jfineco.2019.05.001}{Kelly, Pruitt, and Su (2019)}
+develop IPCA, linking latent factor exposures to observable firm
+characteristics. These methods explain why both return co-movement
+and firm attributes are useful definitions of similarity.
+
+\href{https://doi.org/10.2139/ssrn.3862004}{Guijarro-Ordonez, Pelger, and Zanotti,
+\emph{Deep Learning Statistical Arbitrage}} replace restrictive
+parametric temporal rules with flexible learned patterns in factor
+residuals. The attention paper identifies a remaining limitation:
+factors estimated before the trading policy cannot adjust their
+construction to that policy's turnover and shorting costs. Its
+one-step objective allows that adjustment.
+
+The attention paper's PCA + LongConv benchmark keeps the same
+sequence-model flexibility as its attention model, while changing
+the factor stage. This isolates the value of conditional, jointly
+learned factors. It is a benchmark in the spirit of the earlier deep
+learning paper, not a claim to run every component of its original
+author implementation unchanged.
+
+For the AMS 520 phase-1 talk, this survey should be accompanied by
+data collection and cleaning: identify the WRDS sources, specify
+the 39 characteristics and 79 input columns, explain information
+lags and missing values, and distinguish published settings from
+local choices. The current stage supports a clear methodological
+introduction and a reproducible input plan; a completed replication
+or a new empirical conclusion is a later deliverable.
+
+\section{The complete chain: attention to net Sharpe}
+\label{sec:model-chain}
+
+The model solves three linked problems: construct useful comparison
+portfolios, recognize patterns in their residual returns, and size a
+tradable stock portfolio. Sections 3.2--3.3 and Figure 1 of the paper
+connect them in one training objective.
+
+\subsection{Dimensions and information timing}
+\label{sec:dimensions}
+
+The paper uses $N=500$ eligible securities at a date and $M=79$ inputs
+per security. The optimal attention dimension and sequence hidden
+dimension are both 32, but they serve different roles. The number of
+factors $K$ is a hyperparameter, not the hidden dimension. The residual
+lookback is $L=30$ daily observations.
+
+\begin{center}
+\small
+\begin{tabular}{lll}
+\toprule
+Object & Dimension & Meaning\\
+\midrule
+$X_{t-1}$ & $N\times79$ & Information available before return date $t$\\
+$W_K$ & $79\times d_x$ & Learned linear characteristic embedding\\
+$Q$ & $K\times d_x$ & Learned factor query vectors\\
+$A_{t-1}$ & $K\times N$ & Factor portfolio weights\\
+$F_t$ & $K$ & Realized factor returns\\
+$B_{t-1}$ & $N\times K$ & Mechanically induced factor loadings\\
+$P_{t-1}$ & $N\times N$ & Residual composition matrix\\
+$\epsilon_t$ & $N$ & Realized residual-portfolio returns\\
+$s_{t-1}$ & $N$ & Sequence policy positions in residual space\\
+$w_{t-1}$ & $N$ & Normalized tradable stock positions\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For a decision made before date $t$, compute $A_{t-1},B_{t-1},P_{t-1}$
+using $X_{t-1}$, and compute $s_{t-1}$ using the realized residual returns
+from $t-30$ through $t-1$. The resulting $w_{t-1}$ earns $R_t$.
+Only after $R_t$ is realized can $F_t$ and $\epsilon_t$ be observed.
+The contemporaneous multiplication $F_t=A_{t-1}R_t$ is therefore
+return accounting, not permission to use $R_t$ to choose $w_{t-1}$.
+
+Historical residuals are dated outcomes:
+$\epsilon_\tau=P_{\tau-1}R_\tau$. They should not be recomputed with
+future characteristics or a future trading universe. In Try1 the
+characteristic panel is already aligned to information available by
+the previous close; applying another shift would introduce an
+unintended extra lag.
+
+\subsection{Step 1: firms become keys and factors become queries}
+\label{sec:attention}
+
+Embed the characteristic vector of every firm with the same learned
+matrix:
+\begin{equation}
+ \widetilde X_{t-1}=X_{t-1}W_K.
+ \label{eq:embedding}
+\end{equation}
+A factor query $q_k$ compares with firm $i$ through a scaled dot product,
+$\ell_{ki,t-1}=q_k^{\mathsf T}\widetilde x_{i,t-1}/\sqrt{d_x}$.
+The paper's Equation (1) applies softmax across \emph{eligible firms}
+within each factor:
+\begin{equation}
+ A_{ki,t-1}
+ =\frac{\exp(\ell_{ki,t-1})}
+ {\sum_{j\in\mathcal U_{t-1}}\exp(\ell_{kj,t-1})},\qquad
+ A_{t-1}=\operatorname{rowsoftmax}
+ \left(\frac{Q(X_{t-1}W_K)^{\mathsf T}}{\sqrt{d_x}}\right).
+ \label{eq:attention}
+\end{equation}
+Here $\mathcal U_{t-1}$ is the dated eligible universe. Ineligible firms
+receive zero weight. There is no softmax over dates and no requirement
+that a column sum to one. Different queries can attend to the same firm;
+the factors can overlap substantially. Each row describes one long-only,
+fully invested factor portfolio. The final arbitrage portfolio can
+nevertheless contain both long and short positions.
+
+This is cross-sectional factor-to-firm attention. It differs from a
+standard temporal transformer, where tokens attend to other tokens in a
+sequence. The displayed embedding in the paper is \emph{linear}. The
+softmax provides a nonlinear normalization depending on the other firms
+in the cross-section, but the displayed equations do not specify an
+additional nonlinear multilayer encoder. Adding one would be a model
+extension rather than a literal implementation of these equations.
+
+\subsection{Step 2: attention weights imply factors and loadings}
+\label{sec:factors-loadings}
+
+The factors are actual stock portfolios:
+\begin{equation}
+ F_t=A_{t-1}R_t.
+ \label{eq:factors}
+\end{equation}
+For each date, obtain the loading matrix from the attention matrix:
+\begin{equation}
+ G_{t-1}=A_{t-1}A_{t-1}^{\mathsf T},\qquad
+ B_{t-1}=A_{t-1}^{\mathsf T}
+ (G_{t-1}+\lambda_{\rm ridge}I_K)^{-1}.
+ \label{eq:loadings}
+\end{equation}
+Thus the paper does not fit a separate rolling regression to estimate
+each stock's $\beta$. Once $A$ and the ridge constant are fixed, $B$ is
+determined. It is differentiable with respect to the learned attention
+parameters. The ridge stabilizes the solve when attention portfolios are
+nearly collinear; the paper supplies the formula but not its numerical
+value. An implementation should solve the linear system rather than
+explicitly computing an inverse.
+
+The replicating portfolio for stock $i$ has stock-space weights
+$B_{i,:}A$. Its realized return is $B_{i,:}F_t$. Both the stock and
+its replicating portfolio can therefore be traded.
+
+\subsection{Step 3: residuals are portfolio returns}
+\label{sec:residual-portfolios}
+
+Define
+\begin{equation}
+ P_{t-1}=I_N-B_{t-1}A_{t-1},\qquad
+ \epsilon_t=P_{t-1}R_t.
+ \label{eq:residual-portfolios}
+\end{equation}
+Row $i$ of $P$ specifies the portfolio consisting of the stock minus
+its factor-based replica. For the unit vector $e_i^{\rm unit}$,
+its holdings are $(e_i^{\rm unit})^{\mathsf T}-B_{i,:}A$.
+The return of that portfolio is $\epsilon_{i,t}$. The vector
+$\epsilon_t$ is a set of daily \emph{residual returns}, not a set of
+observed price gaps in dollars.
+
+With zero ridge and full row rank, $P$ is the orthogonal projection
+onto the space outside the factor portfolios. With the paper's positive
+ridge it is a shrinkage residualization. The exact distinction and
+remaining exposure are derived in Section~\ref{sec:ridge-caveat}.
+
+\subsection{Step 4: LongConv learns how to trade each residual history}
+\label{sec:longconv}
+
+The shared sequence model maps the previous 30 residual returns of a
+firm to a scalar residual-space position:
+\begin{equation}
+ s_{i,t-1}=\operatorname{LongConv}_\theta
+ (\epsilon_{i,t-30},\ldots,\epsilon_{i,t-1}).
+ \label{eq:signals}
+\end{equation}
+The same $\theta$ is applied to every firm. A positive output means a
+long position in that firm's residual portfolio; a negative output
+means a short position. This is a policy output, not necessarily a
+forecast of the next residual return and not a hand-specified
+buy-the-loser rule. The policy is trained through the trading objective.
+
+LongConv can recognize different lag patterns, including but not
+limited to mean reversion. The paper's Appendix A defines a hidden
+channel input $u\in\mathbb R^{N\times d_h\times L}$, a learned kernel
+$\mathcal K\in\mathbb R^{d_h\times L}$, and a learned skip vector
+$D\in\mathbb R^{d_h}$:
+\begin{align}
+ y&=\overline{\mathcal K}*u+D\odot u,
+ \label{eq:longconv}\\
+ \overline{\mathcal K}
+ &=\operatorname{sign}(\mathcal K)\odot
+ \max(|\mathcal K|-\lambda_{\rm squash},0).
+ \label{eq:squash}
+\end{align}
+The convolution runs along time; the channels are 32 different learned
+filters. A finite causal convolution at position $a$ has the form
+$y_h[a]=\sum_{j=0}^a\overline{\mathcal K}_h[j]u_h[a-j]+D_hu_h[a]$.
+FFT evaluation must be zero-padded so it implements this linear
+convolution without circular wraparound. Appendix A gives direct
+complexity $O(L^2)$ and FFT complexity $O(L\log L)$; the introduction's
+informal linear-scaling statement should not replace that precise
+FFT complexity.
+
+The squash threshold is $0.001$ and is applied in the forward pass.
+It shrinks the effective kernel and makes small elements zero. It is
+distinct from Adam weight decay. The published kernel initialization is
+\begin{equation}
+ \mathcal K^{(h)}_a
+ =z\exp\left[-\frac{a}{L}
+ \left(\frac{d_h}{2}\right)^{h/d_h}\right],
+ \quad z\sim\mathcal N(0,1),\quad a=1,\ldots,L,
+ \quad h=1,\ldots,d_h.
+ \label{eq:kernel-init}
+\end{equation}
+Each element has its own normal draw. The decay supplies several
+initial time scales; the kernel is then learned.
+
+The target paper does not fully specify how a scalar residual series
+is encoded into hidden channels or decoded to the scalar position.
+Try1 declares the following completion of the architecture:
+\begin{center}
+scalar input $\longrightarrow$ linear projection to 32 channels
+$\longrightarrow$ LongConv $\longrightarrow$ GELU
+$\longrightarrow$ dropout $\longrightarrow$ linear scalar output
+at the final time.
+\end{center}
+The input/output projections, GELU, final-time pooling, and exact
+dropout placement are implementation choices, not recovered author
+settings. LongConv in this implementation consumes raw daily residual
+returns. The OU comparator instead constructs cumulative residual
+paths through its separately delegated preprocessing.
+
+\subsection{Step 5: map residual positions to stocks and normalize}
+\label{sec:holdings}
+
+The policy cannot directly purchase an abstract residual. Its stock
+holdings are obtained by composing the residual portfolios:
+\begin{equation}
+ v_{t-1}=P_{t-1}^{\mathsf T}s_{t-1}
+ =s_{t-1}-A_{t-1}^{\mathsf T}
+ B_{t-1}^{\mathsf T}s_{t-1},\qquad
+ w_{t-1}=\frac{v_{t-1}}{\sum_i|v_{i,t-1}|}.
+ \label{eq:holdings}
+\end{equation}
+The second expression implements the same composition using low-rank
+matrix products. It avoids forming an $N\times N$ matrix on every date.
+When $v\ne0$, normalization imposes the paper's unit gross exposure
+constraint, $\|w_{t-1}\|_1=1$. A zero portfolio requires an explicit
+cash or failure convention; dividing by zero is not a valid strategy.
+
+The residual portfolio identity before normalization is
+$s_{t-1}^{\mathsf T}\epsilon_t=v_{t-1}^{\mathsf T}R_t$.
+After normalization the actual return is
+\begin{equation}
+ g_t=w_{t-1}^{\mathsf T}R_t
+ =\frac{s_{t-1}^{\mathsf T}\epsilon_t}{\|v_{t-1}\|_1}.
+ \label{eq:gross-return}
+\end{equation}
+The paper writes the composition identity together with a unit-$\ell_1$
+constraint; an implementation must make this final scaling explicit.
+Unit gross exposure is not dollar neutrality: $\sum_iw_i$ need not be
+zero. Nor does it force the long and short books to be one-half each.
+
+\subsection{Step 6: charge costs on actual stock positions}
+\label{sec:costs}
+
+For consistent decision-date indexing, charge entry into $w_{t-1}$
+against the preceding holdings $w_{t-2}$ and earn date-$t$ returns:
+\begin{align}
+ \operatorname{turnover}_t&=\|w_{t-1}-w_{t-2}\|_1,\\
+ \operatorname{short}_t&=\|\max(-w_{t-1},0)\|_1,\\
+ c_t&=0.0005\operatorname{turnover}_t
+       +0.0001\operatorname{short}_t,\qquad n_t=g_t-c_t.
+ \label{eq:costs}
+\end{align}
+The rates are 5 basis points per unit of traded stock weight and 1 basis
+point per unit of short stock weight per daily holding period, following
+the displayed paper formula. They are not a single flat 6-basis-point
+charge each day. For example, turnover $0.2$ costs 1 basis point of
+portfolio wealth; short exposure $0.5$ costs 0.5 basis points.
+
+Costs must be charged after composition and normalization, because
+factor hedges also require stock trades. The paper's gross return uses
+$w_{t-1}$ but its displayed cost uses $(w_t,w_{t-1})$ in the expression
+for date-$t$ net return. Try1 explicitly reconciles that notation with
+the causal convention above. Previous actual holdings carry across
+memory batches, month changes, and annual refits. Resetting them to
+cash at every batch changes both the objective and the reported return.
+
+\subsection{Step 7: jointly maximize net Sharpe and explained variance}
+\label{sec:objective}
+
+For a training interval of $T$ daily portfolio returns, the paper's
+Section 3.3 objective is
+\begin{align}
+ J(Q,W_K,\theta)
+ &=\frac{\bar n-R_f}{\sqrt{T^{-1}\sum_t(n_t-\bar n)^2}}
+ +\lambda_{\rm Var}\operatorname{EV},
+ \label{eq:objective}\\
+ \bar n&=T^{-1}\sum_tn_t,\qquad
+ \operatorname{EV}=\frac1N\sum_i
+ \left(1-\frac{\operatorname{Var}_t(\epsilon_{i,t})}
+ {\operatorname{Var}_t(R_{i,t})}\right).
+ \label{eq:ev}
+\end{align}
+Training maximizes $J$, or equivalently minimizes $-J$, with
+$\lambda_{\rm Var}=100$. The first term rewards mean net return
+relative to volatility. The second favors a factor representation that
+explains common variation and regularizes the decomposition. It does
+not require the factors to be mutually independent or economically
+unique. Explained variance is computed as an average of per-stock
+time-series variance ratios; it is not the ratio of two pooled sums
+of squares and not a day-by-day cross-sectional $R^2$.
+
+The denominator printed in the paper is the volatility of net
+\emph{portfolio returns}; the numerator subtracts a risk-free rate.
+Aggregation of a varying daily risk-free series is not specified. Try1
+uses its mean over the interval. For a changing universe, Try1 uses
+each stock's eligible, observed dates, and excludes stocks with fewer
+than two observations or zero return variance. These are declared
+conventions. The unit-gross, possibly nonzero-net strategy also needs
+an explicit financing convention for a complete economic backtest;
+the objective's risk-free subtraction alone does not specify that
+convention.
+
+The displayed objective is daily. Multiplying Sharpe by $\sqrt{252}$
+inside the loss while retaining $\lambda_{\rm Var}=100$ changes the
+relative weight of the two terms. Annualization belongs in reporting
+unless a different training objective is explicitly declared. The
+reported annualized Sharpe is usually $\sqrt{252}$ times the daily
+Sharpe under the stated aggregation convention.
+
+The factor parameters receive gradients through several paths:
+current holdings and stock costs, historical residuals used by the
+sequence policy, and explained variance. The sequence parameters
+receive gradients through the holdings, returns, and costs. The
+paper's contribution is therefore joint optimization: the comparison
+portfolios can change when the trading objective says that turnover
+or shorting makes them unattractive. A PCA factor extractor fitted
+before policy training has no such adjustment path.
+
+\section{Learned parameters, fixed settings, and missing specifications}
+\label{sec:parameter-audit}
+
+A learned parameter changes through backpropagation. A hyperparameter
+or design convention is selected outside that gradient update and
+must be fixed or tuned on past validation data. Factors, loadings,
+residuals, and holdings are model outputs, not independent learned
+parameter blocks.
+
+\begin{center}
+\small
+\begin{tabular}{p{0.20\linewidth}p{0.28\linewidth}p{0.43\linewidth}}
+\toprule
+Learned block & Shape / role & What is actually updated\\
+\midrule
+$W_K$ & $79\times32$ & Linear feature-to-key embedding\\
+$Q$ & $K\times32$ & Factor queries producing attention scores\\
+$\mathcal K,D$ & $32\times30$, $32$ & LongConv kernel and skip coefficients\\
+Other $\theta$ & Architecture dependent & Input/output projections and their biases in Try1\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For Try1's declared one-layer architecture, there are $79\cdot32+32K$
+attention parameters and $64+960+32+33=1089$ sequence parameters, or
+$3617+32K$ nominal parameters overall ($4577$ for $K=30$). This count
+describes Try1, since the target paper leaves parts of $\theta$
+unspecified. It also overstates the effective role of the attention
+inputs, as Section~\ref{sec:constant-cancellation} shows.
+
+\subsection{What the paper specifies}
+
+\small
+\begin{longtable}{p{0.22\linewidth}p{0.22\linewidth}p{0.45\linewidth}}
+\toprule
+Item & Published setting & Source / qualification\\
+\midrule
+\endfirsthead
+\toprule Item & Published setting & Source / qualification\\\midrule
+\endhead
+Universe and dates & Largest 500 securities; daily CRSP, 1990--2021
+& Section 4.1; capitalization from preceding month\\
+Feature dimension & 39 characteristics + 39 medians + risk-free = 79
+& Section 4.1 and Table 1; the 39 already include added daily/weekly features\\
+Attention construction & Linear embedding, dot product, row softmax
+& Section 3.2; attention Equation (1)\\
+Attention dimension & $d_x=32$ & Section 4.2 and Appendix B\\
+Loading construction & Analytic weight-matrix ridge inverse
+& Section 3.2; numerical ridge constant absent\\
+Factor counts studied & $1,3,5,8,10,15,30,100$
+& Section 4.2; attention $K=10$ is absent from published Table 2\\
+Residual lookback & 30 daily residual returns & Section 4.2\\
+Sequence depth / width & 1 layer / 32 hidden channels
+& Section 4.2 and Appendix B\\
+Dropout & 0.1 & Appendix B; placement absent\\
+Kernel / skip form & $y=\mathcal K*u+D\odot u$
+& Appendix A; kernel formula and geometric initialization supplied\\
+Kernel squash & 0.001 in forward pass & Appendix A and Appendix B\\
+Trading constraint & $\|w\|_1=1$ & Section 3.3\\
+Trading costs & 0.0005 turnover + 0.0001 short weight
+& Section 3.3; use stock-space positions\\
+Objective coefficient & $\lambda_{\rm Var}=100$ & Section 4.2, Appendix B\\
+Optimizer name & Adam & Section 4.2; the citation is to the AdamW paper\\
+Learning rate / epochs & 0.003 / 30 & Appendix B\\
+Sequence weight decay & 0.05 & Appendix B: LongConv model\\
+Estimation chronology & Rolling 8 years; annual retraining
+& Section 4.2; evaluate 1998--2021\\
+Validation period & Last 2 years of initial window
+& Section 4.2 and Appendix B; corresponds to 1996--1997\\
+PCA benchmark history & Previous 252 daily observations & Section 4.2\\
+Hardware reported & 5 RTX A6000 GPUs; 2 EPYC 7763 CPUs; 1 TB RAM
+& Appendix B; this is a reported setup, not a minimum requirement\\
+\bottomrule
+\end{longtable}
+\normalsize
+
+\subsection{What an implementation still has to choose}
+
+The following settings are not numerically or operationally specified
+by the target paper. A local choice should be labeled as such, rather
+than attributed to the authors.
+
+\small
+\begin{longtable}{p{0.22\linewidth}p{0.26\linewidth}p{0.41\linewidth}}
+\toprule
+Unspecified item & Try1 declared choice & Why the distinction matters\\
+\midrule
+\endfirsthead
+\toprule Unspecified item & Try1 declared choice & Why the distinction matters\\\midrule
+\endhead
+Numerical ridge & Model default $10^{-6}$; tuning records bind the actual run value
+& Changes stability and approximate factor exposure; do not infer a run's value from a default\\
+Query / embedding initialization & Independent normal queries; PyTorch linear initialization
+& Different starts can yield different local optima\\
+Skip initialization & Independent standard normal
+& Appendix A supplies $D$'s shape, not its initialization\\
+Scalar encoder / decoder & Linear--LongConv--GELU--dropout--linear, final time
+& Architecture completion beyond the target's displayed equations\\
+Dropout placement & Following GELU & Rate 0.1 alone does not determine placement\\
+Adam versus AdamW & Named Adam in original matrix
+& Adam and AdamW apply decay differently; target text and cited title differ\\
+Optimizer details & Recorded runtime defaults and manifests
+& Betas, epsilon, decay grouping, schedule, and clipping are not supplied\\
+Updates per epoch / gradient window & One full-window update per epoch in original matrix
+& 30 epochs does not specify minibatch sizes or optimizer-update count\\
+Memory batches & Original matrix: 256 days; later K30 experiment: 128 days
+& Local hardware settings, not published statistical hyperparameters\\
+Risk-free aggregation & Mean daily series in objective
+& The target writes $R_f$ without a full daily-series convention\\
+EV under changing membership & Per-stock eligible observed dates
+& The target's balanced notation does not resolve an unbalanced panel\\
+Rank scale / ties / cohort & Centered midpoint average ranks in dated cohort
+& ``Rank quantiles'' does not specify a unique numeric transform\\
+Daily/weekly definitions & Five trading-session week; sample weekly standard deviation
+& Exact rolling endpoints and variance convention need disclosure\\
+Missing / empty cross-section & Causal carry then median; preserve masks
+& Missing returns cannot be treated as observed zero returns\\
+Universe restrictions & Company universe, fixed class, common-share/exchange filters
+& These are local differences from the paper's security cohort\\
+Short history for new members & Zero own signal if fewer than 30 observed residuals
+& Mechanical hedge positions can still arise; no fabricated history\\
+Execution / delisting accounting & Previous-close availability, explicit claims and gap assumptions
+& The target paper does not fully specify event accounting\\
+Boundary accounting & Initial entry charged once; carry previous actual holdings
+& Batch or refit resets can distort turnover\\
+Seed count / values & Three predeclared seeds in original matrix
+& The paper says multiple starts but does not disclose their count or values\\
+Initial refit after tuning & Refit on full initial 8 years with frozen settings
+& This is a local interpretation of the reported validation chronology\\
+Annualization / financing & Record definitions and distinguish return/excess Sharpe
+& Published table ratios and printed risk-free subtraction are not enough to recover all conventions\\
+t-SNE and factor labels & Record seed, settings, industry scheme, permutation
+& Figures are not uniquely identified by the factor objective\\
+\bottomrule
+\end{longtable}
+\normalsize
+
+The broader Try1 project contains later experimental protocols in
+addition to the original fixed-30-epoch matrix. Their extra convergence
+rules, float64 computations, and continuation settings are local
+experiments. They are not the original paper's published training
+schedule.
+
+\section{Important insights from Try1}
+\label{sec:try1-insights}
+
+The local implementation and specification are useful because they
+make several hidden assumptions visible. They are an implementation
+audit, not author code for the target paper.
+
+\subsection{The 40 common input columns cancel in the displayed attention}
+\label{sec:constant-cancellation}
+
+Write the 79-column input for firm $i$ at a fixed date as
+$x_i=(r_i,m,R_f)$, where $r_i$ contains 39 firm-specific ranks and
+$m$ contains 39 raw cross-sectional medians. The latter 40 entries are
+identical across firms. Partition the linear embedding conformably.
+For factor $k$,
+\begin{equation}
+ \ell_{ki}=\frac{q_k^{\mathsf T}W_r^{\mathsf T}r_i}{\sqrt{d_x}}
+ +\underbrace{\frac{q_k^{\mathsf T}
+ (W_m^{\mathsf T}m+W_f^{\mathsf T}R_f)}{\sqrt{d_x}}}_{c_k\text{, constant across firms}}.
+\end{equation}
+Because
+\begin{equation}
+ \frac{\exp(\ell_{ki}+c_k)}{\sum_j\exp(\ell_{kj}+c_k)}
+ =\frac{\exp(\ell_{ki})}{\sum_j\exp(\ell_{kj})},
+ \label{eq:common-cancellation}
+\end{equation}
+the median and risk-free input columns have no mathematical effect on
+$A$, $B$, or $P$ under the explicitly linear embedding and row-softmax
+equations. Their attention-path gradient is zero in exact arithmetic.
+The risk-free series still affects the \emph{objective} through its
+Sharpe numerator. This cancellation is a derivation from the published
+equations, not a statement that the paper itself acknowledges.
+
+The authors say the common columns preserve level information, but
+the displayed architecture does not accomplish that purpose. A
+nonlinear encoder could make common state interact with firm ranks,
+but it would alter the specified model. Try1 retains all 79 inputs and
+subtracts one eligible firm's vector before the linear embedding.
+This subtracts a common logit offset and leaves the softmax exactly
+unchanged while preventing very large raw medians from overwhelming
+small rank differences in float32 arithmetic.
+
+There is a related identification issue: the attention scores depend
+on $QW_K^{\mathsf T}$ rather than on uniquely identified coordinates
+of $Q$ and $W_K$ separately. Appropriate invertible changes of basis
+in the hidden space preserve their product. Factor permutations also
+preserve the represented model. Interpret factor portfolios and
+loading relationships, rather than assigning intrinsic meaning to a
+particular hidden coordinate or numerical factor label.
+
+\subsection{Ridge means approximate residualization}
+\label{sec:ridge-caveat}
+
+Let $G=AA^{\mathsf T}$ and $\lambda=\lambda_{\rm ridge}>0$.
+The residual matrix is
+\begin{equation}
+ P=I-A^{\mathsf T}(G+\lambda I)^{-1}A.
+\end{equation}
+It is symmetric, but generally $P^2\ne P$. In particular,
+\begin{equation}
+ AP=\lambda(G+\lambda I)^{-1}A,
+ \qquad PB=\lambda B(G+\lambda I)^{-1}.
+ \label{eq:ridge-exposure}
+\end{equation}
+Thus residual returns and composed stock holdings can retain exposure
+to the constructed factors. If the relevant singular values of $A$
+are large relative to the ridge, the residualization is close to the
+zero-ridge projection; if they are very small, the difference can be
+material. ``Factor hedged'' is an intended construction, and exact
+factor neutrality should not be claimed without measuring the
+remaining exposure. Dollar neutrality is a separate constraint even
+in the zero-ridge case.
+
+\subsection{Full-window Sharpe cannot be replaced by batch Sharpe}
+\label{sec:window-sharpe}
+
+The mean of daily returns and the volatility of those returns jointly
+define a Sharpe ratio over the full training interval. Averaging the
+Sharpe ratios of memory batches yields a different loss:
+\begin{equation}
+ \operatorname{Sharpe}(n_1,\ldots,n_T)
+ \ne \frac1{B_{\rm batches}}\sum_b
+ \operatorname{Sharpe}(\{n_t:t\in b\})
+ \quad\text{in general}.
+\end{equation}
+Turnover also links adjacent dates across batch boundaries. Try1
+separates the hardware memory partition from the statistical
+objective. A first model pass caches outputs and dropout states;
+the full interval ledger and objective produce derivatives with
+respect to holdings and residuals; replaying the model in batches
+propagates those derivatives to its parameters. Matching dropout
+random states preserves the same sampled objective. Historical
+context overlaps each batch, so gradients through a later signal
+can reach earlier residual calculations.
+
+Try1 additionally evaluates only the final LongConv output needed by
+the policy using an algebraically equivalent finite convolution.
+Earlier hidden time outputs need not be stored. The code preserves
+the full-shape dropout draw sequence to maintain its declared replay
+equivalence. This is a computational optimization of the local
+architecture, not a new trading signal.
+
+\subsection{Data and training completion remain separate claims}
+
+Try1 deliberately uses a monthly top-500 \emph{company} universe with
+a fixed security class and extends sources through 2024. The paper
+uses the largest 500 securities through 2021. Local company
+aggregation, fixed-class selection, eligibility filters, and economic
+event accounting are material differences and should be disclosed
+when results are eventually compared.
+
+The saved Try1 status on October 3, 2026 describes an incomplete
+experiment matrix and a separate K30 convergence attempt. An
+in-sample Sharpe diagnostic, a verified model gradient, or a completed
+data audit does not establish a completed out-of-sample reproduction.
+For this phase-1 introduction, the performance numbers below are
+the paper's results; the local contribution is the implementation
+and specification audit.
+
+\section{Training on CPU and GPU}
+\label{sec:cpu-gpu}
+
+Every mathematical component can run on CPU. A GPU is useful for
+batched tensor arithmetic and backpropagation, but it does not
+accelerate a WRDS query, repair missing accounting inputs, or resolve
+a security identifier. Data engineering and numerical learning are
+different parts of the workload.
+
+\begin{center}
+\small
+\begin{tabular}{p{0.31\linewidth}p{0.19\linewidth}p{0.41\linewidth}}
+\toprule
+Work & Typical placement & Reason / Try1 use\\
+\midrule
+WRDS extraction, file parsing, CCM joins, dated cohort construction
+& CPU / storage & Database and irregular tabular operations\\
+Characteristic formulas, causal carry, medians, ranks, masks
+& CPU & Deterministic preprocessing; preserve source and availability dates\\
+Characteristic embedding, attention logits, softmax
+& GPU for training & Batched matrix products and gradients; CPU remains valid\\
+$K\times K$ ridge solves, factors, residuals, stock composition
+& Same device as model & Avoid repeated transfers; low-rank products reduce memory\\
+LongConv and parameter backward pass
+& GPU for training & Parallel channels, stocks and dates; long FFTs can benefit\\
+Full-period ledger, turnover, EV, Sharpe and output derivatives
+& CPU in Try1 & Stores full chronology with bounded GPU memory; differentiable CPU tensors\\
+Replay model derivatives and Adam updates
+& GPU in CUDA runs & Transfers output derivatives back to each replay batch\\
+Independent float64 numerical checks and data audits
+& CPU, sometimes GPU comparison & Reference correctness and reproducibility checks\\
+OOS evaluation, figures, tables, checkpoints
+& CPU or GPU model; CPU reporting & No gradients needed for evaluation; writing and graphics are CPU tasks\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+At a single date, the main attention costs are roughly
+$O(NMd_x+KNd_x+K^2N+K^3)$ for embedding, scores, the Gram matrix,
+and the solve. Factor/residual and stock-composition products cost
+$O(NK)$ once the state is available. Keeping $A$ and $B$ avoids
+$O(N^2)$ storage for $P$ on every date. Model intermediates over many
+dates usually consume more memory than the few thousand parameters.
+Move date batches and their 30-day context to the GPU while keeping
+immutable sources and the full-period ledger in host memory.
+
+The paper reports five RTX A6000 GPUs and a large CPU/RAM cluster,
+but does not state which stages use each device or require five GPUs
+for a single fit. A single suitable GPU can run the declared local
+model with memory batches. Whether it is faster depends on the
+whole pipeline: a dated Try1 K5 profile found that the CPU objective
+accounted for approximately 82--85\% of epoch time. That result is
+specific to the profiled configuration and does not establish a
+universal bottleneck for every $K$ or architecture.
+
+Do not change the statistical loss just to occupy the GPU. In
+particular, independent minibatch Sharpe objectives, forgotten
+boundary holdings, missing return zeros, and a future-data universe
+can create a fast implementation of a different experiment.
+
+\section{What the paper's evidence supports}
+\label{sec:paper-evidence}
+
+Section 4.2 uses eight-year rolling training windows with annual
+refits, evaluating January 1998--December 2021. The first historical
+window is 1990--1997; its final two years are used for initial
+validation. The PCA benchmark estimates top eigenvectors of the
+return covariance matrix using the previous 252 trading days and
+then trains a flexible LongConv policy on the residuals. The
+parametric benchmark combines PCA residuals with an OU threshold
+rule. The benchmarks help distinguish flexible temporal trading
+from the benefit of learning the factors jointly with trading.
+
+\begin{center}
+\small
+\begin{tabular}{lrrr}
+\toprule
+Paper Table 2 model & $K$ & Gross annual SR & Net annual SR\\
+\midrule
+Attention Factors & 30 & 3.97 & 2.28\\
+PCA + LongConv & 30 & 2.79 & 1.57\\
+PCA + OU threshold & 30 & 0.18 & $-6.45$\\
+Attention Factors & 100 & 4.52 & 2.19\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+These are published out-of-sample values under the paper's cost and
+data conventions, not promises of achievable future returns. The
+$K=30$ attention model has gross annual mean return $16.66\%$ and
+net annual mean return $9.52\%$ in that table. The distinction between
+gross and net is central: increasing $K$ to 100 improves gross
+Sharpe but its net Sharpe is slightly lower than that of $K=30$.
+More explained variation or a higher gross Sharpe does not by itself
+answer the trading question.
+
+The paper argues that weak factors can help arbitrage even when
+they explain relatively little common variance. Table 3 also shows
+that removing past-return features reduces net Sharpe from 2.28 to
+0.59, while removing the trading-friction group reduces it to 1.34.
+Other group removals have smaller reported effects. These are
+retrained group ablations; they are not single-variable causal
+effects or a ranking of each of the 39 characteristics.
+
+The phase-1 message is therefore precise: start from a familiar
+factor decomposition, turn its residuals into tradable relative
+portfolios, and learn both the comparison portfolios and a shared
+temporal trading policy against a net-performance objective.
+The reproduction work then has to make the paper's missing
+operational choices explicit before performance can be assessed.
+
+
+% Included by report.tex. Requires amsmath, array, booktabs, longtable, hyperref.
+\section{The 39 characteristics, the 79 inputs, and their WRDS construction}
+\label{app:characteristics}
+
+\subsection{What the number 79 actually counts}
+The input dimension is \emph{not} 79 independent firm characteristics. The paper's Table~1 lists 39 base characteristics: 8 past-return, 8 value, 3 investment, 10 trading-friction, 7 profitability, and 3 intangible characteristics. There are 35 monthly or annual characteristics and four daily additions: \texttt{Ret\_D1}, \texttt{Ret\_W1}, \texttt{STD\_W1}, and weekly volume \texttt{Vol}. At each date the model receives
+\[
+ X_{i,t-1}=\bigl(q_{i,1,t-1},\ldots,q_{i,39,t-1},
+ m_{1,t-1},\ldots,m_{39,t-1},r^f_{t-1}\bigr)\in\mathbb R^{79},
+ \qquad 79=39+39+1.
+\]
+Here $q$ is the firm's cross-sectional characteristic rank quantile, $m$ is the raw cross-sectional median of the corresponding characteristic, and $r^f$ is the risk-free return. Each median and the risk-free return are broadcast to every firm on that date. All rank and median columns are computed locally; they are not ready-made WRDS fields. The paper states this design in \href{https://arxiv.org/html/2510.11616v1}{Section~4.1}. Its 35 inherited characteristics refer to the Chen--Pelger--Zhu construction; the detailed dictionary below also checks \href{https://pubsonline.informs.org/doi/suppl/10.1287/mnsc.2023.4695/suppl_file/mnsc.2023.4695.sm1.pdf}{their Internet Appendix, Table~IA.XXVII} and the saved \texttt{Try1} implementation.
+
+\paragraph{Three different levels of evidence.}
+\textbf{Paper} means explicitly stated in Attention Factors. \textbf{Reference} means a definition or timing convention from the cited characteristic construction. \textbf{Try1 choice} means an implementation decision recorded in this project's code or approved panel, rather than recovered author code. The target does not publish its input panel or all data-cleaning details. The table below is therefore a reproducible construction specification with its uncertainties identified, not a claim to have recovered the authors' exact data.
+
+\subsection{Download route, keys, and common definitions}
+The exact source objects used by \texttt{Try1} are summarized below. WRDS schema names can differ across subscriptions and updates; check the account's data dictionary rather than substituting a product solely because its short table name matches.
+
+\begin{longtable}{@{}p{0.08\textwidth}p{0.35\textwidth}p{0.51\textwidth}@{}}
+\toprule
+Code & WRDS source used in Try1 & Fields and acquisition purpose \\
+\midrule
+\endfirsthead
+\toprule Code & WRDS source used in Try1 & Fields and acquisition purpose \\
+\midrule
+\endhead
+M & \texttt{crspa.msf}, with historical monthly name/event information from \texttt{crspa.mse} & Monthly stock file: \texttt{permno}, \texttt{permco}, \texttt{date}, \texttt{ret}, \texttt{prc}, \texttt{shrout}, \texttt{vol}; historical \texttt{shrcd}/\texttt{exchcd} identify the dated universe. Download the historical market, including inactive issues, before choosing each month's largest firms. \\
+\addlinespace
+D & \texttt{crspa.dsf}, with \texttt{crspa.dse} history & Daily stock file: \texttt{permno}, \texttt{date}, \texttt{ret}, \texttt{prc}, \texttt{cfacpr}, \texttt{vol}, \texttt{bid}, \texttt{ask}. Do not substitute \texttt{retx} for dividend-inclusive \texttt{ret}, or \texttt{bidlo}/\texttt{askhi} for closing quotations. \\
+\addlinespace
+A & \texttt{comp\_na\_daily\_all.funda} & Annual Compustat fundamentals keyed by \texttt{gvkey}, \texttt{datadate}; download the accounting fields listed for each characteristic below. The model slice uses \texttt{indfmt=INDL}, \texttt{datafmt=STD}, \texttt{consol=C}, \texttt{popsrc=D}, \texttt{curcd=USD}. These are Try1 filters. \\
+\addlinespace
+L & \texttt{crspa.ccmxpf\_lnkhist} & Link \texttt{gvkey} to \texttt{lpermno}/\texttt{lpermco} within inclusive \texttt{linkdt}/\texttt{linkenddt}. Approved v5 uses \texttt{linktype=LC,LU} and \texttt{linkprim=P,C,J}; reject overlapping competing GVKEYs. A unique J link can provide issuer accounting for a retained secondary share class. \\
+\addlinespace
+F & \texttt{ff\_all.factors\_daily} & \texttt{date}, \texttt{rf}, \texttt{mktrf}, \texttt{smb}, \texttt{hml}. RF is downloaded; FF factors enter the \texttt{Resid\_Var} and \texttt{Beta} computations. They are not the model's learned attention factors. Try1's actual WRDS exports are already decimal returns; its scale is 1. French CSV percentages require division by 100. \\
+\bottomrule
+\end{longtable}
+
+These routes are supported by the saved exact SQL/export manifests, the \href{https://wrds-www.wharton.upenn.edu/demo/crsp/form/}{WRDS CRSP variable dictionary}, and the \href{https://wrds-www.wharton.upenn.edu/pages/wrds-research/database-linking-matrix/database-linking-tool/}{WRDS database-linking documentation}. The daily-update Compustat product describes its refresh frequency; it does not mean that the financial statements are daily-frequency observations.
+
+\paragraph{Units and shared accounting objects.}
+Let $ME_{i,m}=|\mathrm{PRC}_{i,m}|\mathrm{SHROUT}_{i,m}\times1000$ in dollars for the legacy CRSP export. Compustat accounting amounts are in millions of reported currency, so divide this market equity by $10^6$ in accounting ratios. Negative CRSP \texttt{prc} is a quotation convention, not negative economic value. Legacy monthly \texttt{vol} is in hundreds of shares; daily \texttt{vol} is shares. These conversions must be reconsidered for CIZ or other file formats. For example, the \href{https://www.crsp.org/wp-content/uploads/guides/CRSP_US_Stock_\%26_Indexes_Database_Guide_Flat_File_Format_1.0.pdf}{CRSP flat-file guide} explicitly documents a monthly-volume unit change.
+
+The \texttt{Try1} company universe sums eligible share-class capitalization within PERMCO. Its trading security is the previously selected fixed PERMNO. Company capitalization and a particular class's return are separate objects. This intentional company-level convention differs from the paper's largest-500-equities wording.
+
+Using the first available item in each stated hierarchy, define
+\begin{align*}
+PS &= \operatorname{first}(\mathrm{PSTKRV},\mathrm{PSTKL},\mathrm{PSTK}),\\
+SH &= \operatorname{first}(\mathrm{SEQ},\mathrm{CEQ}+PS,\mathrm{AT}-\mathrm{LT}),\\
+BE &= SH+\mathrm{TXDITC}-PS,\\
+NOA^{\$} &= (\mathrm{AT}-\mathrm{CHE}-\mathrm{IVAO})
+ -(\mathrm{AT}-\mathrm{DLC}-\mathrm{DLTT}-\mathrm{MIB}-\mathrm{PSTK}-\mathrm{CEQ}).
+\end{align*}
+These are computed objects, not single source columns. BE-based rows require the A fields \texttt{seq, ceq, at, lt, txditc, pstkrv, pstkl, pstk}; $NOA^{\$}$ requires \texttt{at, che, ivao, dlc, dltt, mib, pstk, ceq}. Try1 keeps missing components missing and does not silently set preferred stock, deferred taxes, R\&D, or advertising to zero. It treats zero denominators and nonfinite results as missing. It does not automatically log size, winsorize the base characteristics, or impose a positive-BE screen.
+
+\subsection{Timing and missing values, before constructing ranks}
+In the following tables, $t$ is the trading day whose return will be earned, $m$ is its calendar month, $y$ is an annual June formation year, and $z^{-}$ is the adjacent prior fiscal-year observation. \textbf{D timing} means a feature uses sessions no later than $t-1$. \textbf{M timing} means a feature is computed through the end of $m-1$ and carried into month $m$. \textbf{A timing} uses a fiscal year ending in calendar year $y-1$, released into the panel at the last June session of $y$ for subsequent decisions. Recognized actual release dates can delay this further. Annual June updating comes from the delegated construction; exact publication dates and historical accounting vintages are not supplied by the target.
+
+Try1 retains the last fiscal end in each calendar year and requires an adjacent calendar fiscal year for lagged-accounting denominators and changes. A missing intervening year does not become a one-year change by shifting to the next available record. Its dated CCM link must be valid when the annual value becomes usable. Already public pre-entry statements can become usable at a later valid link start; they cannot be used before it.
+
+\paragraph{The same missing rule applies to every row.}
+Decode vendor missing tokens before calculations. If a raw characteristic is unavailable or its formula is invalid, use the latest finite value of \emph{that same characteristic for that firm} available by the signal cutoff. If no own value has ever been available, use that date's cross-sectional median. Never fill from a future observation. Never silently interpret a missing return, expense, or quote as an observed zero. Try1 preserves source dates, source ages, and flags for exact-cutoff observations, own-history carry, median fallback, and inactive entries. If the entire rank cohort lacks a characteristic, its implementation fails rather than inventing a median. Carrying a five-session statistic when its current window is incomplete can produce a stale statistic; its age must remain visible.
+
+\subsection{Complete base-characteristic dictionary}
+The fields below are downloaded directly from the coded source routes, then the formulas are computed. \texttt{AT} is a raw annual level and \texttt{Ret\_D1} is a dated lookup of an observed daily return. Other rows require arithmetic, window aggregation, regression, or multiple-source matching. The ``choice'' notes separate unpublished implementation decisions from referenced definitions.
+
+\begingroup
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.18}
+\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.14\textwidth}>{\raggedright\arraybackslash}p{0.40\textwidth}>{\raggedright\arraybackslash}p{0.41\textwidth}@{}}
+\toprule
+Characteristic & Meaning and computed value & WRDS raw fields, timing, and unresolved choices \\
+\midrule
+\endfirsthead
+\toprule Characteristic & Meaning and computed value & WRDS raw fields, timing, and unresolved choices \\
+\midrule
+\endhead
+\midrule \multicolumn{3}{r}{\emph{Continued on next page}} \\
+\endfoot
+\bottomrule
+\endlastfoot
+\multicolumn{3}{@{}l}{\textbf{Past returns: 8 characteristics}} \\*
+\addlinespace
+\texttt{r2\_1} & Short-term momentum: previous completed month's total return, $R_{i,m-1}$. & M: \texttt{ret}. M timing. The cited appendix gives the same definition as \texttt{ST\_Rev}; keep both columns rather than inventing a different lag. \\
+\texttt{r12\_2} & Momentum excluding the most recent month: $\prod_{j=m-12}^{m-2}(1+R_{i,j})-1$ (11 months). & M: \texttt{ret}, with \texttt{prc, shrout} for referenced eligibility checks. M timing. The reference has special FF missing-price eligibility. Try1 instead requires all 11 return observations; an incomplete product becomes missing, then follows carry/median. \\
+\texttt{r12\_7} & Intermediate momentum: $\prod_{j=m-12}^{m-7}(1+R_{i,j})-1$ (6 months). & M: \texttt{ret}. M timing. Try1 requires all six observations and preserves missing windows. \\
+\texttt{r36\_13} & Long-term momentum: $\prod_{j=m-36}^{m-13}(1+R_{i,j})-1$ (24 months). & M: \texttt{ret}. M timing. This is not the separate 60-to-13-month ``LT Rev'' from the larger reference dictionary. Pre-sample monthly history is necessary. \\
+\texttt{ST\_Rev} & Short-term reversal characteristic: $R_{i,m-1}$. It is an input value, not a hard-coded contrarian position. & M: \texttt{ret}. M timing. Duplicate of \texttt{r2\_1} under the referenced definition; the model can learn the direction. \\
+\texttt{Ret\_D1} & Previous daily total return: $R_{i,t-1}$. & D: \texttt{ret}. D timing. Direct dated return lookup; do not use today's return in today's attention weights. The approved v5 panel uses raw stock RET for learning and separately accounts for terminal payoff claims. \\
+\texttt{Ret\_W1} & Previous week's cumulative return. Try1: $\prod_{d=t-5}^{t-1}(1+R_{i,d})-1$. & D: \texttt{ret}. D timing. The paper says previous week; five global trading sessions is a Try1 choice. Require five observations before the standard missing rule. \\
+\texttt{STD\_W1} & Previous week's daily return standard deviation. Try1: sample SD of $R_{i,t-5:t-1}$. & D: \texttt{ret}. D timing. Five sessions and sample divisor $n-1$ are choices. It measures recent variability, not a separate weekly-return SD estimated over many weeks. \\
+\addlinespace
+\multicolumn{3}{@{}l}{\textbf{Value: 8 characteristics}} \\*
+\addlinespace
+\texttt{A2ME} & Assets to market equity: $\mathrm{AT}/ME_{\mathrm{Dec}(y-1)}$. & A: \texttt{at}; M: \texttt{prc, shrout}. A timing. December ME uses matching currency units. Try1 uses company ME; the target does not state this aggregation. \\
+\texttt{BEME} & Book-to-market: $BE/ME_{\mathrm{Dec}(y-1)}$. & A: BE fields above; M: \texttt{prc, shrout}. A timing. BE must be computed with the explicit preferred-stock/equity hierarchies. Missing components remain missing. \\
+\texttt{C} & Cash ratio: $\mathrm{CHE}/\mathrm{AT}$. & A: \texttt{che, at}. A timing. CHE includes cash and short-term investments. A zero/missing AT makes the ratio missing. \\
+\texttt{CF} & Free cash flow to book equity: $(\mathrm{NI}+\mathrm{DP}-\mathrm{WCAPCH}-\mathrm{CAPX})/BE$. & A: \texttt{ni, dp, wcapch, capx} and BE fields. A timing. WCAPCH is the named source field, not an arbitrary balance-sheet difference or operating-cash-flow replacement. Modern source absence is material; see the audit below. \\
+\texttt{CF2P} & Cash flow to market equity: $(\mathrm{IB}+\mathrm{DP}+\mathrm{TXDB})/ME_{\mathrm{Dec}(y-1)}$. & A: \texttt{ib, dp, txdb}; M: \texttt{prc, shrout}. A timing. TXDB is distinct from TXDITC in the BE formula. \\
+\texttt{Q} & Tobin's Q construction: $(\mathrm{AT}+ME-\mathrm{CEQ}-\mathrm{TXDB})/\mathrm{AT}$. & A: \texttt{at, ceq, txdb}; M: \texttt{prc, shrout}. A timing. The reference names CEQ but calls it cash in prose; CEQ means common equity. Try1 uses the named CEQ and December ME, flagging both interpretive decisions. \\
+\texttt{Lev} & Leverage: $(\mathrm{DLTT}+\mathrm{DLC})/(\mathrm{DLTT}+\mathrm{DLC}+\mathrm{SEQ})$. & A: \texttt{dltt, dlc, seq}. A timing. This denominator uses SEQ, not the derived BE object; no unspecified BE substitution. \\
+\texttt{E2P} & Earnings to market equity: $\mathrm{IB}/ME_{\mathrm{Dec}(y-1)}$. & A: \texttt{ib}; M: \texttt{prc, shrout}. A timing. IB is income before extraordinary items for the fiscal year ending in calendar year $y-1$. \\
+\addlinespace
+\multicolumn{3}{@{}l}{\textbf{Investment: 3 characteristics}} \\*
+\addlinespace
+\texttt{Investment} & Asset growth: $(\mathrm{AT}-\mathrm{AT}^{-})/\mathrm{AT}^{-}$. & A: current and adjacent-prior \texttt{at}. A timing. One-year fiscal change; not market-cap growth. \\
+\texttt{NOA} & Net operating assets scaled by prior assets: $NOA^{\$}/\mathrm{AT}^{-}$. & A: $NOA^{\$}$ fields above, plus prior \texttt{at}. A timing. Use the operating-asset/liability construction shown above. \\
+\texttt{DPI2A} & Physical investment: $(\Delta\mathrm{PPEGT}+\Delta\mathrm{INVT})/\mathrm{AT}^{-}$. & A: current/prior \texttt{ppegt, invt, at}. A timing. Use gross PPE, not silently PPENT. The reference's denominator mnemonic ``TA'' is interpreted as AT and recorded. \\
+\addlinespace
+\multicolumn{3}{@{}l}{\textbf{Trading frictions: 10 characteristics}} \\*
+\addlinespace
+\texttt{AT} & Size in accounting assets: the raw \texttt{AT} level, later rank-normalized. & A: \texttt{at}. A timing. Direct annual field. Do not confuse this base characteristic with the attention matrix $A$ or replace it with log assets without disclosure. \\
+\texttt{LME} & Size in market equity: $|\mathrm{PRC}|\mathrm{SHROUT}\times1000$ dollars at preceding month-end. & M: \texttt{prc, shrout}. M timing. ``LME'' is the column label; the reference defines capitalization, not its logarithm. Approved Try1 replaces class ME with the dated company sum. \\
+\texttt{LTurnover} & Monthly share turnover: $(100\,\mathrm{VOL}_{m-1})/(1000\,\mathrm{SHROUT}_{m-1})$. & M: \texttt{vol, shrout}. M timing. Conversion shown applies to legacy monthly units. The paper does not publish historical Nasdaq volume adjustments or a log transform. \\
+\texttt{Rel2High} & Prior month-end split-consistent price divided by the highest split-consistent daily price over the preceding year. & D: \texttt{prc, cfacpr}. M timing. Try1 uses $p_d=|\mathrm{PRC}_d|/\mathrm{CFACPR}_d$, a trailing 252-session maximum, and accepts shorter history (minimum one). Calendar-year versus session convention is unpublished. \\
+\texttt{Resid\_Var} & Residual variance from daily excess-return OLS on FF3 over $m-2,m-1$: $R_{i,d}-RF_d=a+b_M MKTRF_d+b_S SMB_d+b_H HML_d+u_d$. & D: \texttt{ret}; F: \texttt{rf, mktrf, smb, hml}. M timing. Try1 includes an intercept, requires at least 20 complete rows and full design rank, and uses sample variance of $u$. This diagnostic differs from the model's attention residual. \\
+\texttt{Spread} & Average quoted spread over $m-1$. Try1: mean of $(ASK_d-BID_d)/[(ASK_d+BID_d)/2]$. & D: \texttt{bid, ask}. M timing. Require $BID>0$, $ASK\ge BID$ and finite relative spread; average valid days, otherwise missing. The reference says bid--ask spread but does not state this exact relative form or a minimum-day count. \\
+\texttt{SUV} & Standardized unexplained volume. Predict volume using $V_d=a+b_+\max(R_d,0)+b_-\max(-R_d,0)$; standardize volume residuals. & D: \texttt{vol, ret}. M timing. Try1 fits 60 sessions before month $m-1$, requires 40 complete rows/full rank, and averages out-of-fit standardized residuals in $m-1$, using fit-residual sample SD. Fit window, prediction convention, and aggregation are unpublished. \\
+\texttt{Variance} & Variance of daily total returns over the two completed calendar months $m-2,m-1$. & D: \texttt{ret}. M timing. Try1 uses sample variance of available observations; at least two are needed for a defined sample variance. The target supplies no minimum-day count or divisor. \\
+\texttt{Vol} & Weekly trading volume. Try1: $\sum_{d=t-5}^{t-1}\mathrm{VOL}_{i,d}$ in shares. & D: \texttt{vol}. D timing. Five global sessions, summed volume, and a complete five-observation window are choices. This is not volatility; \texttt{STD\_W1} and \texttt{Variance} measure return variability. \\
+\texttt{Beta} & Frazzini--Pedersen-style beta: correlation of overlapping three-day log-excess returns over five years, times stock/market one-year daily log-excess SD ratio. & D: \texttt{ret}; F: \texttt{rf, mktrf}. M timing. Reference minima: 120 daily SD observations and 750 correlation observations. Try1 uses 252/1260 sessions and $\ell_i=\log(1+R_i)-\log(1+RF)$, $\ell_M=\log(1+MKTRF+RF)-\log(1+RF)$. This is not the separate reference column MktBeta. \\
+\addlinespace
+\multicolumn{3}{@{}l}{\textbf{Profitability: 7 characteristics}} \\*
+\addlinespace
+\texttt{PROF} & Gross profitability to book equity: $(\mathrm{SALE}-\mathrm{COGS})/BE$. & A: \texttt{sale, cogs} and BE fields. A timing. The reference calls the numerator GP; Try1 derives gross profit from the stated available components. \\
+\texttt{CTO} & Capital turnover: $\mathrm{SALE}/\mathrm{AT}^{-}$. & A: \texttt{sale}, prior \texttt{at}. A timing. The denominator is lagged assets, not current assets. \\
+\texttt{FC2Y} & Fixed costs to sales: $(\mathrm{XSGA}+\mathrm{XRD}+\mathrm{XAD})/\mathrm{SALE}$. & A: \texttt{xsga, xrd, xad, sale}. A timing. The appendix prints XSGS; Try1 uses the standard XSGA expense field. All three expense components must be observed; zero-filling missing XRD/XAD is not specified. \\
+\texttt{OP} & Operating profitability: $(\mathrm{REVT}-\mathrm{COGS}-\mathrm{XINT}-\mathrm{XSGA})/BE$. & A: \texttt{revt, cogs, xint, xsga} and BE fields. A timing. The appendix prints TIE for interest expense; Try1 uses XINT and records the mapping. REVT is not silently replaced by SALE. \\
+\texttt{PM} & Profit margin: $\mathrm{OIADP}/\mathrm{SALE}$. & A: \texttt{oiadp, sale}. A timing. OIADP is operating income after depreciation. \\
+\texttt{RNA} & Return on net operating assets: $\mathrm{OIADP}/(NOA^{\$})^{-}$. & A: \texttt{oiadp} and prior $NOA^{\$}$ fields. A timing. The denominator is prior dollar NOA, not the prior \emph{scaled} NOA characteristic. \\
+\texttt{D2A} & Capital intensity: $\mathrm{DP}/\mathrm{AT}$. & A: \texttt{dp, at}. A timing. DP is depreciation and amortization, not dividend payments. \\
+\addlinespace
+\multicolumn{3}{@{}l}{\textbf{Intangibles: 3 characteristics}} \\*
+\addlinespace
+\texttt{OA} & Operating accruals: $(\Delta NCWC-\mathrm{DP})/\mathrm{AT}^{-}$. Try1 literal reference: $NCWC=\mathrm{ACT}-\mathrm{CHE}-\mathrm{LCT}-\mathrm{DLC}-\mathrm{TXP}$. & A: current/prior \texttt{act, che, lct, dlc, txp}, current \texttt{dp}, prior \texttt{at}. A timing. The minus DLC/TXP signs conflict with conventional Sloan signs; exact author construction is unknown. A conventional-sign alternative must be labeled a sensitivity. \\
+\texttt{OL} & Operating leverage: $(\mathrm{COGS}+\mathrm{XSGA})/\mathrm{AT}$. & A: \texttt{cogs, xsga, at}. A timing. This is the empirical cost/assets proxy from the reference, not a direct structural elasticity estimate. \\
+\texttt{PCM} & Price-cost margin: $(\mathrm{SALE}-\mathrm{COGS})/\mathrm{SALE}$. & A: \texttt{sale, cogs}. A timing. Despite the acronym's prose label, this ratio uses sales and cost of goods sold, not a stock-price field. \\
+\end{longtable}
+\endgroup
+
+\subsection{How the quantile transformation works}
+Try1 first gathers the latest causally available own characteristic values, including own-history carries, for the \emph{dated 500-company monthly membership cohort}. It computes the median from the finite values in that cohort, fills firms with no own history with that median, and then ranks the filled cross-section. The rank cohort includes retained classes that may no longer be trade-eligible; its separate eligibility mask is used when forming tradable portfolios. This scope is an implementation choice, not specified by the paper.
+
+For $N$ cohort firms and an average rank $\operatorname{rank}_{\rm avg}$ that assigns the same midpoint rank to ties, the declared transformation is
+\[
+ q_{i,j,t-1}=\frac{\operatorname{rank}_{\rm avg}(z_{i,j,t-1})-1/2}{N}-\frac12.
+\]
+Its range is $(-1/2,1/2)$, and a singleton has value zero. This is a continuous rank quantile, not assignment to ten discrete deciles. The target does not state the range, tie formula, rank cohort, or exact order of median calculation versus imputation. For example, raw values $(10,20,20,\mathrm{missing},50)$ with no own history for the missing firm have median 20; after filling, average ranks are $(1,3,3,3,5)$ and centered quantiles are $(-0.4,0,0,0,0.4)$. The broadcast raw-median column remains 20. It is not the median of the normalized ranks.
+
+Monthly and annual values are held until a new available observation arrives. Daily feature windows are evaluated on the global trading-session calendar, so five sessions are not five nonmissing observations. For the return dated $t$, Try1 has already selected input information through the preceding global session $t-1$. Its model input must not be shifted a second time. RF in the 79th input column is lagged; the performance objective has a separate holding-period RF series.
+
+\subsection{WRDS acquisition checklist for this project}
+\begin{enumerate}
+\item Retrieve the full historical monthly stock universe, including inactive securities, to select each month's largest companies using preceding-month market capitalization. Historical share/exchange codes determine the chosen eligible universe. An ex-post union of selected identifiers is acceptable for download scope; it must not become the trading universe on every date.
+\item Retrieve the selected securities' daily and monthly histories with enough warm-up: 36-month momentum needs earlier monthly data, and Beta needs up to five years of daily history. Try1 acquired daily initialization history back to 1983 and monthly history back to 1980. A download starting in 1989 alone cannot supply complete earliest 1990 features.
+\item Retrieve all dated CCM links, then issuer annual statements using GVKEY. Download years before the test/training start for adjacent fiscal lags. Try1's main annual acquisition starts in 1980. Retain original source tokens and schema/format/currency metadata before filtering.
+\item Retrieve daily FF3 and RF on the same market calendar; verify units against the exact export. Keep raw vendor archives, checksums, retrieval date, exact SQL, identifier scope, and the missing-code dictionary. Deduplicate event joins only after checking their keys; never silently collapse genuinely conflicting observations.
+\item Compute the 39 base characteristics, preserve information dates and invalid-formula masks, apply causal carry/median, compute the 39 ranks and 39 raw medians, then append lagged RF. Store cohort membership separately from contemporaneous trading eligibility and observed performance returns.
+\end{enumerate}
+
+\subsection{What Try1 actually reveals about data limitations}
+The approved v5 accounting diagnostic is a useful empirical insight, rather than a resolved feature specification. Across 87,623 downloaded annual rows, the preferred filters and last-fiscal-end rule retain 51,210 records. Only 3,283 have WCAPCH, all from cash-flow format SCF=1; the last observed fiscal date is October~31, 1989. Thus preferred fiscal years 1990--2024 contain \emph{no observed WCAPCH} for the literal CF formula. The vendor's change from working-capital statements to SFAS~95 cash-flow statements is consistent with this disappearance. Try1 does not replace WCAPCH with a different cash-flow field.
+
+Consequently, across its 4,534,500 monthly-member security-days in 1989--2024, CF uses 2,110,551 genuine own-history carries and 2,423,940 median fallbacks (53.5\%); only nine values become newly available at an exact daily cutoff. Some carries are decades old. FC2Y is valid in only 11,255 of the 51,210 preferred annual records because all three expense components are required. Its full-panel median fallback share is 64.3\%. These counts are for \emph{monthly membership}, not the smaller current trading-eligibility set and not necessarily realized holdings. They demonstrate that apparently complete model inputs can contain substantial stale or median-imputed information. They do not show that firms stopped filing or that a missing expense is economically zero.
+
+The report of those counts is \nolinkurl{Try1/reviews/accounting_missingness_v5/source_and_missingness_report.md}. The primary vendor explanation is preserved in \nolinkurl{Try1/references/Compustat_Xpressfeed_Understanding_Data_2007.pdf}, printed pages~61--62. Historical-vintage accounting products were attempted but inaccessible under this account. June publication lags reduce timing leakage; they do not undo current-vintage restatements. The effect of those revisions cannot be estimated from the accessible single snapshot.
+
+\subsection{A mathematical issue with the common 40 input columns}
+The paper's explicit embedding is linear, $\widetilde X=XW_K$. For factor query $q_k$, the contribution of the 39 broadcast medians and RF is a date-specific constant $c_{k,t-1}$, identical across firms. Consequently,
+\[
+ A_{k,i}=\frac{\exp(v_{k,i}+c_k)}{\sum_j\exp(v_{k,j}+c_k)}
+       =\frac{\exp(v_{k,i})}{\sum_j\exp(v_{k,j})}.
+\]
+Those 40 cross-sectionally common inputs cancel from row-softmax under the displayed linear architecture; their attention gradients are zero in exact arithmetic. This is an inference from the paper's equations, also checked in Try1, rather than a statement made by the authors. The stated intention of retaining absolute-level information therefore does not follow from those equations alone. Preserve the declared 79 inputs for a faithful implementation; introducing a nonlinear interaction to make their levels matter would be a separately labeled model modification.
+
+
+% Report fragment based on the two browser-captured shared discussions.
+% Conversation equations/examples are checked against the target paper;
+% unspecified encoder/readout and proposed extensions remain labeled.
+\section{A reader's guide to the questions in the shared discussions}
+\label{sec:discussion-guide}
+
+The two shared conversations show which transitions need to be explained
+slowly in the talk: dimensions, residual portfolios, temporal channels,
+stock holdings and the cost-adjusted objective. They also contain useful
+later qualifications to earlier illustrative answers. The following
+guide preserves those qualifications. The source of the model is
+Epstein, Wang, Choi and Pelger, \emph{Attention Factors for Statistical
+Arbitrage}, DOI \href{https://doi.org/10.1145/3768292.3770398}
+{10.1145/3768292.3770398}; a conversation is a record of the questions,
+rather than independent evidence of author implementation choices.
+
+\subsection{Is \texorpdfstring{$K$}{K} a number, and are the two dimensions of 32 the same?}
+
+$K$ is the chosen number of factors. For example, with $N=500$, $M=79$
+and $K=8$, the characteristic embedding is $500\times32$, the query
+matrix is $8\times32$, the attention matrix is $8\times500$, and the
+loading matrix $B$ is $500\times8$. Increasing $K$ adds queries and factor
+portfolios; it does not change the published embedding dimension to $K$.
+The notation $W^K$ names the characteristic embedding matrix of shape
+$79\times32$; its superscript is not an instruction to raise a matrix to
+a numerical power.
+
+Use separate names $d_{\mathrm{attn}}=32$ and $d_{\mathrm{seq}}=32$ in the
+presentation. The first is the space in which firm embeddings and factor
+queries meet. The second is the number of temporal channels inside
+LongConv. Their equal numerical values do not identify their coordinates
+or share their weights. Residuals bridge the two modules as scalar return
+histories, rather than as the attention embedding vectors.
+\emph{Paper sources: Sections 3.2 and 4.2, Appendix A, and Table 4.}
+
+\subsection{How does one scalar residual become 32 channels?}
+
+The paper gives the input to the LongConv core as
+$u\in\mathbb{R}^{N\times d_{\mathrm{seq}}\times30}$ and states one layer
+with hidden dimension 32. It does not fully specify the scalar encoder,
+activation, normalization, pooling or scalar decoder surrounding that
+core. Earlier answers illustrated the affine lift
+\[
+u_{i,h,\tau}=a_h e_{i,\tau}+b_h,
+\qquad h=1,\ldots,32,
+\]
+with shared learned $a,b$. This is a concrete implementation illustration,
+not an equation documented in the target paper. Likewise, taking the last
+hidden vector and applying a linear scalar decoder is a disclosed choice,
+not a recovered original architecture. The discussion's later answers
+explicitly corrected this distinction.
+
+Visualize one residual as 32 horizontal channels, each containing 30
+time positions. Each channel has its own length-30 temporal kernel and
+skip coefficient. The core processes $32\times30$ into $32\times30$;
+a sequence-to-one readout is still needed to produce a scalar signal.
+The channels initially come from the same residual observations, so
+lifting the scalar does not create 32 independent data sources. The
+different filters and surrounding learned operations provide different
+ways of processing that information. We should describe a flexible
+temporal policy without claiming that a particular channel was proved
+to learn momentum or mean reversion.
+\emph{Paper sources: Section 3.3 and Appendix A; wrapper choices:
+Try1 methodology and model-chain review.}
+
+\subsection{Where does the formula for \texorpdfstring{$B$}{B} come from?}
+
+The discussion provides a useful derivation in \emph{portfolio-weight
+space}. With known factor portfolios $A\in\mathbb{R}^{K\times N}$,
+approximate each stock's unit-vector portfolio by combinations of the
+rows of $A$. Stacking those coefficients gives
+\[
+\min_{B\in\mathbb{R}^{N\times K}}
+\lVert I-BA\rVert_F^2+\lambda\lVert B\rVert_F^2.
+\]
+The first-order condition and solution are
+\[
+(BA-I)A^{\mathsf T}+\lambda B=0,
+\qquad
+B=A^{\mathsf T}(AA^{\mathsf T}+\lambda I)^{-1}.
+\]
+This explains the printed algebra. It is not a claim that the authors
+estimate $B$ by a historical return regression. Minimizing expected
+return-reconstruction error with a general return covariance would
+involve that covariance and need not give this same formula. With zero
+ridge and full row rank, $B$ is the pseudoinverse of $A$ and $BA$ is an
+orthogonal projection; positive ridge changes that exact geometry.
+\emph{Paper source: Section 3.2. The optimization derivation is an
+explanatory derivation, not an additional stated training step.}
+
+\subsection{Which \texorpdfstring{$\omega$}{omega} is the portfolio, and what does normalization fix?}
+
+The original notation uses $\omega$ for several objects. For the talk,
+rename them $A$ (factor weights), $P=I-BA$ (residual composition), $s$
+(residual-space signals), $u=P^{\mathsf T}s$ (raw stock positions), and
+$w=u/\lVert u\rVert_1$ (normalized stock weights). The payoff identity
+$s^{\mathsf T}e=(P^{\mathsf T}s)^{\mathsf T}R$ explains why the transpose
+is necessary. A scalar $s_i=0.5$ means 0.5 units of residual portfolio
+$i$, not a 50\% holding of stock $i$ or a 50\% share of final capital.
+
+Softmax normalizes each factor row. It does not normalize residual rows,
+signed signals or their combined stock exposures. Overlapping hedges may
+add or cancel. Final $L^1$ normalization fixes total long-plus-short
+notional to one; it does not impose dollar neutrality. A positive common
+rescaling $s\mapsto cs$ cancels after final normalization, but changing
+one residual's scale relative to another generally changes the resulting
+portfolio. If a row of $P$ is multiplied by $c$, its allocation must be
+divided by $c$ to preserve that contribution; the policy does not
+automatically do so. The published $P=I-BA$ sets the residual scales, and
+there is no explicit per-residual volatility standardization in the
+printed policy equation. Such a normalization would be an additional
+model choice. A zero raw vector also needs an explicitly declared policy,
+because dividing it by its $L^1$ norm is undefined.
+\emph{Paper source: Section 3.3, portfolio identity and constraint.}
+
+\subsection{What are \texorpdfstring{$\bar R$, $R_f$}{mean R, risk-free R} and the denominator?}
+
+$\bar n$ is the arithmetic average of the daily \emph{net portfolio}
+returns over the objective window, not an average across stocks and not
+the latest return. The printed Sharpe term uses
+\[
+\frac{\bar n-R_f}
+{\sqrt{T^{-1}\sum_t(n_t-\bar n)^2}}.
+\]
+Its denominator uses $T$, a population-style moment of the represented
+return path. A sample-variance convention instead uses $T-1$; the two
+standard deviations differ by $\sqrt{T/(T-1)}$. The usual Bessel
+unbiasedness statement applies to \emph{variance} under its statistical
+assumptions, not to the square-root standard deviation. Reproduction
+should implement the printed objective directly rather than rely on a
+library's default correction.
+
+$R_f$ must have the same daily frequency and units as $n_t$. The paper
+does not name its exact RF data source or spell out the aggregation of a
+varying daily series. Try1 uses the aligned daily RF mean. Kenneth French
+daily RF is a documented reproduction source choice; percent values are
+converted to decimals once. Already daily RF must not be divided by 252
+again. The printed denominator is net-return volatility, which is not
+necessarily excess-return volatility when RF varies. Annual reporting
+with a 252-day convention is separate from the daily training objective;
+inserting $\sqrt{252}$ only into its Sharpe term changes the relative
+weight of the explained-variance penalty.
+\emph{Paper source: Section 3.3; RF source/aggregation and reporting
+conventions: Try1 methodology.}
+
+\subsection{Why 30 days if training uses eight years?}
+
+Thirty strictly past trading-day residuals are the temporal input for
+\emph{one} decision. Eight years contain many overlapping examples of
+such histories and their subsequent portfolio outcomes, and supply the
+full-window cost-adjusted objective used to learn shared parameters.
+The examples across firms and time are dependent; they should not be
+counted as independent samples. The fixed trained parameters are
+re-estimated annually using the rolling eight-year window. One decision
+also uses lagged firm characteristics, whose construction may require
+longer return or accounting histories. Thus ``30-day policy lookback''
+does not mean that only 30 days of raw data are required for the entire
+pipeline. The paper separately gives the PCA comparator a 252-day
+factor-estimation lookback.
+\emph{Paper sources: Section 4.2 and Table 1/Appendix characteristic
+references.}
+
+\subsection{Must a query select a sector?}
+
+No sector label or sector-classification loss forces a query to do this.
+The paper interprets observed sector-like structure using t-SNE of
+loadings and top-weight factor constituents after training. These are
+empirical interpretation results, not architectural constraints. A
+query can select a style, mixed group or local relation useful for the
+joint objective; firms may load on several factors. We can motivate
+the method with a technology-basket analogy while labeling that as
+intuition. The goal is a useful common-return representation from which
+to trade relative deviations, rather than guaranteed discovery of a
+fixed industry partition.
+\emph{Paper sources: Section 4.4 and Figures 3--4.}
+
+\subsection{Was daily turnover of 47\% reported?}
+
+The conversations correctly later identified it as an inference. Table 2
+reports $K=30$ annual gross/net mean returns of 16.66\% and 9.52\%, but
+does not report a separate turnover series. Under 252-day arithmetic
+annualization, the 7.14 percentage-point difference implies roughly
+2.833 basis points of daily combined cost. Writing average $L^1$ stock
+turnover as $\bar{\mathrm{TO}}$ and short exposure as $\bar S$, the
+printed cost formula implies
+\[
+5\bar{\mathrm{TO}}+\bar S\approx2.833,
+\qquad
+\bar{\mathrm{TO}}\approx0.5667-0.2\bar S.
+\]
+Assuming $\bar S=0.5$ gives $\bar{\mathrm{TO}}\approx0.467$, about
+47\% of unit gross notional per day. The exposure constraint alone
+allows $0\leq\bar S\leq1$, giving roughly 37--57\% rather than a
+uniquely identified 47\%. Rounded published averages also limit the
+precision of this inference. The paper's full-$L^1$ turnover is not the
+half-$L^1$ convention sometimes called one-way turnover. For a
+reproduction, turnover must be measured from the saved stock holdings.
+\emph{Paper sources: Section 3.3 cost equation and Table 2; 47\% is
+an assumption-dependent derivation.}
+
+\subsection{Where do online optimization and RL fit?}
+
+These were proposed extensions in the discussions, not components of
+the target paper. A useful follow-on question is whether a controller
+that observes current holdings can decide \emph{when and how far} to
+move toward the model's target. An online readout would adapt only after
+the required return information is observed. An RL or differentiable
+sequential controller would carry holdings and costs through a
+chronological rollout. This changes the decision rule and its state,
+rather than merely increasing a turnover coefficient. It needs separate
+validation against simple partial-rebalancing or no-trade baselines at
+comparable exposure and risk. Regret guarantees for a restricted convex
+online head do not automatically extend to joint attention/LongConv/RL
+training; lower turnover alone is not evidence of improved net performance.
+Keep this as one brief possible next step in Phase 1.
+
+\subsection{Question-to-presentation map}
+
+\begin{center}
+\begin{tabular}{p{0.45\linewidth}p{0.47\linewidth}}
+\hline
+Question from the shared history & Placement and teaching device \\
+\hline
+What is $K$? Are the two 32s the same? & Main talk: one dimension
+diagram with $d_{\mathrm{attn}}$ and $d_{\mathrm{seq}}$. \\
+Why can residual risk become an opportunity? & Main talk: common basket
+plus unusual deviation, followed by a predictability qualification. \\
+How does $B$ arise? & Main talk: analytic mimicking map; backup: the
+four-line weight-space ridge derivation. \\
+Which weights are residuals and which are stocks? & Main talk: one
+residual basket, a signal on it, then the $P^{\mathsf T}$ payoff identity. \\
+How does scalar input become 32 channels? & Main talk: channels-by-time
+picture; report/backup: clearly labeled illustrative encoder/readout. \\
+Why normalize? What about relative scales? & Main talk: long plus short
+gross exposure; backup: common scaling versus individual scaling. \\
+Why 30 days and eight years? & Main talk: decision-lookback versus
+parameter-fit timeline. \\
+What are RF and population/sample volatility? & Main talk: objective
+in plain words; report/backup: units, frequency and exact moments. \\
+Must queries learn sectors? & Main talk: one published interpretation
+figure with sector emergence stated as an empirical finding. \\
+Is turnover 47\%? & Main talk: reported gross/net cost gap; backup:
+47\% assumption and range, with no claim of measured turnover. \\
+How would online learning or RL change the method? & Final brief next
+step only; detailed proposed controller belongs to later phases. \\
+\hline
+\end{tabular}
+\end{center}
+
+
+% Fragment for the Phase 1 report. Audited from local Try1 evidence on
+% 2026-10-03 at 15:52 UTC (11:52 America/New_York). No training was run.
+\section{Lessons from the local Try1 attempt}
+\label{sec:try1-lessons}
+
+Try1 is an implementation and partial reproduction, with independently
+checked data, model arithmetic and selected saved histories. It has not
+completed the experiment matrix or reproduced the paper's reported
+performance. The observations below help explain the method and identify
+what a later reproduction must establish. Local evidence paths are listed
+in the accompanying \texttt{sources/try1\_audit.md}.
+
+\subsection{What the economic interpretation requires}
+
+The classical decomposition $R_t=B_{t-1}F_t+e_t$ does not itself make
+$e_t$ an arbitrage opportunity. A residual may be noise, omitted systematic
+risk, a lasting repricing, or an exploitable temporary deviation. The
+trading hypothesis is that its \emph{strictly past} history contains a
+predictable pattern that remains profitable after hedging and costs.
+Here statistical arbitrage denotes a risky trading strategy, rather than
+a guaranteed risk-free payoff.
+
+In the attention construction, characteristics set factor portfolio
+weights $A_{t-1}$ before the return day. The realized factor return
+$F_t=A_{t-1}R_t$ is known after that day, just as a sector index return is.
+The sequence policy for day $t$ uses residuals only through $t-1$.
+Computing a realized factor return from today's stocks is compatible with
+causality; using today's residual to set today's position would not be.
+
+The learned factors provide soft economic peer groups. They can resemble
+sectors, styles or other common return patterns, and one company may
+participate in several factors. The model does not require industry labels
+as inputs, and it does not make firms literally equivalent to sectors.
+Industry-colored loading plots are a way to interpret the learned
+coordinates after fitting. The paper's factor portfolios $A$ and its
+asset loadings $B$ have different roles and should not be conflated.
+
+\subsection{Four useful clarifications about the model}
+
+\begin{enumerate}
+\item \textbf{Loadings are analytic.} The embedding and factor queries are
+learned, but
+\[
+B=A^{\mathsf T}(AA^{\mathsf T}+\lambda_{\mathrm{ridge}}I)^{-1}
+\]
+is computed from $A$. It is not an additional neural network or a separate
+time-series OLS estimation. Production can solve the small $K\times K$
+system without explicitly inverting it.
+
+\item \textbf{Residual signals must be converted to stock positions.}
+With $P=I-BA$, residual returns are $e=PR$. A signal vector $s$ in
+residual space earns
+\[
+s^{\mathsf T}e=(P^{\mathsf T}s)^{\mathsf T}R.
+\]
+Thus unnormalized stock positions are $u=P^{\mathsf T}s$, followed by
+$w=u/\lVert u\rVert_1$. A stock with zero own signal can still receive a
+hedging position. The $L^1$ normalization imposes unit \emph{gross}
+exposure. It does not by itself impose zero net dollar exposure.
+
+\item \textbf{Ridge makes the hedge approximate.} For positive ridge,
+\[
+AP=\lambda_{\mathrm{ridge}}
+(AA^{\mathsf T}+\lambda_{\mathrm{ridge}}I)^{-1}A,
+\]
+which is generally nonzero. Consequently $P$ is generally not an exact
+projection and its portfolio is not exactly factor neutral. The ridge
+value is unpublished; Try1 selected $10^{-6}$ on the initial validation
+window from a predeclared list $10^{-5},10^{-6},10^{-7}$.
+
+\item \textbf{The factors and policy are trained together.} Factor
+parameters change residual variance, past residual histories and the
+hedging map. Policy parameters change signals and portfolio returns.
+The cost-adjusted Sharpe term trains both blocks; the explained-variance
+term directly trains the factor block. A separate factor fit followed by
+an unrelated policy fit would change this objective.
+\end{enumerate}
+
+\subsection{The 79-input construction has a printed-model inconsistency}
+
+The local manifest preserves 39 characteristic ranks, 39 corresponding
+raw cross-sectional medians and the risk-free rate. The last 40 columns
+are constant across firms on a date. For the paper's printed \emph{linear}
+embedding, their contribution to each factor's logit is a common scalar
+$c_{k,t}$:
+\[
+\operatorname{softmax}_{i}(\ell_{k,i,t}+c_{k,t})
+=\operatorname{softmax}_{i}(\ell_{k,i,t}).
+\]
+They therefore have no mathematical effect on attention weights and zero
+attention data gradients in exact arithmetic. This limits the paper's
+stated interpretation that these inputs supply cross-sectional level
+information. Median imputation still affects the firm-specific ranks;
+the risk-free series still enters the Sharpe objective. Try1 preserves the
+79-column interface and uses equivalent feature centering to avoid
+float32 cancellation. A nonlinear embedding would be a different model,
+not an innocuous implementation of the printed equation.
+
+\subsection{Missing characteristics and missing returns are different}
+
+The paper's characteristic rule is to carry the firm's last observed
+available value and then use a current cross-sectional median if no own
+history exists. Try1 records source dates, age and fallback flags. The
+source audit found that literal CF depends on \texttt{WCAPCH}, which has
+no preferred-source observations after fiscal 1989. As a result, CF uses
+median fallbacks on 53.5\% of monthly-member days in the approved panel,
+with many remaining own values very old. FC2Y uses median fallbacks on
+64.3\% of such days because advertising, R\&D and other required expenses
+are often missing. Missing expenses were not silently set to zero and a
+different cash-flow formula was not substituted. These counts concern
+the implementation's dated company cohort, not the unpublished author
+dataset.
+
+Missing returns require an economic holding policy. They cannot simply
+be relabeled observed zero returns or filled by the characteristic rule.
+The panel has 33 missing stock-return observations among causally
+eligible members; a broader monthly-member count is 55 including 1989.
+These scopes differ. Former members can still be held, so a small member
+missing-return count does not establish that the portfolio has no
+unpriced exposure. Try1's last-price marks, quote locks and delayed
+delisting claims are explicit assumptions. An absent retained quote
+does not establish a trading halt. Assumed constituent marks can affect
+factor offsets and residual learning as well as the final P\&L.
+
+The local monthly top-500 \emph{company} universe with a retained fixed
+share class differs from the paper's top-500 \emph{security} universe.
+Its share/exchange filters also differ from examples in the paper. The
+single accessible current accounting vintage contains unknown
+restatements; release lags address publication timing without recovering
+historical unrevised values. These are material comparison limits.
+
+\subsection{Thirty epochs and a stable Sharpe have different meanings}
+
+The fixed-30 attempt completed 12 attention histories: $K=1,3,5,8$, each
+with three independent seeds, covering 1998--2024. This produces 24 of
+the required 180 seed/period rows. The original matrix was intentionally
+interrupted to prioritize a separate $K=30$ experiment; an older
+\texttt{running} progress field is historical, not evidence of a current
+worker. The complete-matrix training and result audits remain incomplete.
+
+The model-chain review checked 324 completed annual fits and 9,720
+recorded epoch rows. In 306 fits, the best recorded loss was still at
+epoch 30. The recorded rows used active dropout before each optimizer
+update, so the last row was not a dropout-off diagnostic of the final
+checkpoint. Completing the paper's stated epoch count therefore does
+not establish convergence.
+
+A separate $K=30$, seed-0, 1990--1997 pilot has 1,013 completed updates.
+Its latest complete original post-update diagnostic is at update 1,010.
+Across six checks from 960 through 1,010, objective, net training Sharpe,
+explained variance and actual-step checks plateaued under the declared
+tolerances. Mean holdings change still failed, and the original
+Monte Carlo expected-dropout gradient confirmation had not run.
+It has no full convergence certificate or out-of-sample performance
+result. A separately versioned continuation accepts training-Sharpe
+stability under the user's instruction while retaining all other
+diagnostic outcomes. This acceptance rule must not be described as all
+convergence tests passing.
+
+A positive objective also need not imply positive net Sharpe: the
+explained-variance contribution is multiplied by 100. Tiny positive
+own-return variances can make the per-stock variance-ratio objective
+extremely sensitive. Try1 independently confirmed an example with only
+two eligible observations and a residual/own variance ratio above five
+million. This is an objective/domain issue, not proof that the stock
+provides an enormous trading opportunity.
+
+\subsection{What runs on CPU and what runs on GPU}
+
+\begin{center}
+\begin{tabular}{p{0.25\linewidth}p{0.66\linewidth}}
+\hline
+Stage & Suitable device and local implementation \\
+\hline
+WRDS acquisition and cleaning & CPU and I/O: query/export, identifiers,
+dated company links, source lags and observed/missing flags. \\
+Characteristic construction & CPU: accounting formulas, rolling market
+statistics, cross-sectional medians, ranks and panel storage. These are
+prepared before neural training. \\
+Attention and residual mapping & GPU: dense tensor operations, softmax,
+$K\times K$ solves, factor returns and low-rank residual products. CPU
+can run them for small reference checks. \\
+LongConv and model gradients & GPU: batched histories, convolutions,
+dropout, backward propagation and parameter updates. \\
+Complete-window objective & CPU in Try1: chronological economic ledger,
+turnover/short costs, whole-window Sharpe and per-stock variance ratios,
+then derivatives with respect to cached holdings and residuals. \\
+PCA, auditing and reporting & CPU in the current workflow: prior-window
+covariance/eigensystems, saved-history recomputation, metrics and plots.
+These are separate from neural fitting. \\
+\hline
+\end{tabular}
+\end{center}
+
+This division is an implementation choice, not a requirement of the
+mathematical model. Much of the objective is tensor arithmetic and can
+also use a GPU; chronological exceptional holding/claim logic and I/O
+may limit the benefit. Try1 uses a hybrid full-window gradient replay:
+CUDA forward outputs are cached on CPU, the entire objective and its
+output derivatives are computed once, and CUDA replays the identical
+dropout/RNG realization to accumulate parameter gradients. One optimizer
+update follows. Averaging the Sharpes of memory chunks is not equivalent
+to the full-window Sharpe and would change the training target.
+
+The fixed-30 profile used float32 on an RTX 5080, 256-day training chunks,
+two workers and eight CPU threads per worker. The separate extended
+$K=30$ profile uses float64, 128-day chunks and one worker with a CPU
+float64 complete-window objective. In a dated $K=5$ production snapshot
+of 28 fits and 840 epochs, later windows averaged 5.40--5.68 seconds per
+epoch, with 82--85\% of measured epoch time in CPU objective work. This
+explains why low GPU utilization can coexist with active training. Those
+timings do not predict the duration of a different factor count,
+precision, convergence schedule or full experiment matrix.
+
+\subsection{What is safe to say in a Phase 1 introduction}
+
+The main talk should present the paper's hypothesis, equations,
+information timing, training target and reported findings. A short
+project-status remark can say that the data/model pipeline is built,
+important implementation ambiguities have been documented, and
+reproduction is still in progress. If local outcomes are shown, they
+must be labeled as frozen-choice partial results. Independently checked
+three-seed mean paper-period plain gross/net Sharpes are
+$0.405/0.162$ at $K=1$ and $0.169/-0.831$ at $K=8$, versus the paper's
+$3.05/1.68$ and $3.35/1.94$. These differ substantially. Their arithmetic
+audits establish consistency of the saved histories, rather than a
+causal explanation for the gap or a successful full reproduction.
+The 2022--2024 extension has no published benchmark. RF-subtracted
+Sharpe, which is used in the training objective, must be distinguished
+from the plain mean/volatility Sharpe in these comparison rows.
+
+
+\section{Talk scope and delivery}
+The AMS 520 Fall 2026 syllabus defines Phase I as an initial literature survey, data collection and cleaning, with presentations around 20 minutes per group. The talk therefore explains a classical factor decomposition and its literature context, the meaning of residual trades, learned peer portfolios, data construction, attention, analytic hedging, LongConv, stock weights, costs and joint training. The main slides have a 20-minute speaking schedule. Backup slides carry the complete characteristic list and derivations so that the main talk stays readable. The talk reports the paper's published 1998--2021 evidence and uses Try1 to identify implementation lessons. It does not claim a completed local reproduction.
+
+The user's phrase ``firms equivalent to sectors'' is interpreted as representing each firm through learned common-factor exposures. The factors may resemble sectors, but their weights are soft, overlapping and learned without industry labels. They serve the trading objective rather than a sector-classification objective.
+
+The two linked discussions also consider holdings-aware control, online adaptation and reinforcement learning. Those remain possible later research directions. Phase 1 introduces the original attention-factor method and makes its cost treatment clear. An optional backup slide gives the extension question without claiming an established improvement or regret guarantee.
+
+\section{Sources and provenance}
+\begin{enumerate}
+\item Epstein, E., Wang, R., Choi, J., and Pelger, M. (2025). \emph{Attention Factors for Statistical Arbitrage}. ICAIF '25. \href{https://doi.org/10.1145/3768292.3770398}{DOI}; \href{https://arxiv.org/abs/2510.11616}{author manuscript}. Core equations, Section 3, data and training, Section 4, LongConv, Appendix A. Local supplied paper and author source were inspected.
+\item Chen, L., Pelger, M., and Zhu, J. \emph{Deep Learning in Asset Pricing}. \href{https://arxiv.org/abs/1904.00745}{author manuscript}; \href{https://pubsonline.informs.org/doi/suppl/10.1287/mnsc.2023.4695/suppl_file/mnsc.2023.4695.sm1.pdf}{Internet Appendix}, characteristic definitions Table IA.XXVII. The locally retained primary-source appendix extract records ambiguities and its version.
+\item Guijarro-Ordonez, J., Pelger, M., and Zanotti, G. \emph{Deep Learning Statistical Arbitrage}. \href{https://arxiv.org/abs/2106.04028}{author manuscript}; cited author implementation for delegated OU conventions. Its older PCA/sequence-model defaults do not replace the target paper.
+\item Fu et al. (2023). \emph{Simple Hardware-Efficient Long Convolutions for Sequence Modeling}. \href{https://proceedings.mlr.press/v202/fu23a.html}{ICML proceedings}; \href{https://github.com/HazyResearch/safari}{primary implementation}. LongConv context and wrapper examples. A reference wrapper is not proof of the target authors' exact wrapper.
+\item \href{https://wrds-www.wharton.upenn.edu/pages/get-data/}{WRDS data access}, CRSP legacy/CIZ documentation and Compustat Xpressfeed documentation retained in Try1. Source product and subscription affect table availability.
+\item \href{https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html}{Kenneth French Data Library}. Daily RF and factor data are a documented reproduction source. Percentage values must be converted to decimal daily returns.
+\item User-provided conversations: \href{https://chatgpt.com/share/6ac12191-42e0-83e9-8fb0-137caf242679}{Learn the paper -- Potential Change} and \href{https://chatgpt.com/share/6ac121b5-9a30-83e9-b7f6-cb7297b2e6c4}{Summarize Paper Idea -- Potential Change}. All 31 and 9 prompt locations were traversed. Browser-derived message captures are retained under \texttt{sources/}. Earlier generic architecture illustrations are qualified where the target paper leaves details unspecified.
+\item User-provided \href{https://www.overleaf.com/project/67fd57b643c2b55bc9d6d26b}{Graduate Seminar 2 Slide}. Inspected and downloaded as a reference: Beamer Boadilla, standard 4:3 size, SBU red RGB $(153,0,0)$, white background and footer numbering. The new deck adds titles and the intact official logo.
+\item \href{https://www.stonybrook.edu/marcom/design-visual-identity/logos.html}{Stony Brook University logo guidelines and original artwork}. Official horizontal shield-and-wordmark PNG is retained in \texttt{assets/sbu\_logo.png}.
+\item Local Try1 sources, specification, feature manifest, implementation, reports and dated benchmark evidence. Audited claim-to-file records and source checksums are retained under \texttt{sources/try1\_audit.md} and \texttt{sources/try1\_source\_snapshot.json}. Local observations are snapshots, not live training-status promises.
+\end{enumerate}
+\end{document}

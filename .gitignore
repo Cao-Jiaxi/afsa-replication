@@ -25,6 +25,8 @@ companionpaper/
 
 # Copyrighted papers and course material
 *.pdf
+# ...except our own compiled slide decks
+!slides/*/main.pdf
 
 # Python / environment
 .venv/

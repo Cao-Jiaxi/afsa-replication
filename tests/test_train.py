@@ -1,5 +1,6 @@
 """Batching, the training loop for several models at once, evaluation, and the joining of test years."""
 import argparse
+import json
 
 import numpy as np
 import pandas as pd
@@ -130,15 +131,14 @@ def _save_year(folder, year, n, permnos, w_first, w_last, turnover0):
 
 
 def test_stitching_pays_the_trade_between_consecutive_models(tmp_path):
-    cfg = Config()
     _save_year(tmp_path, 2001, 3, [10, 20, 30], [0.5, -0.5, 0.0], [0.2, -0.3, 0.5], turnover0=9.0)
     _save_year(tmp_path, 2002, 3, [20, 30, 40], [-0.4, 0.1, 0.5], [0.0, 0.5, -0.5], turnover0=9.0)
-    daily = stitch(tmp_path, cfg)
+    daily = stitch(tmp_path)
     assert len(daily) == 6
     assert np.isclose(daily["turnover"].iloc[0], 1.0)                        # bought from cash
     # 10: 0.2 -> 0, 20: -0.3 -> -0.4, 30: 0.5 -> 0.1, 40: 0 -> 0.5
     assert np.isclose(daily["turnover"].iloc[3], 0.2 + 0.1 + 0.4 + 0.5)
-    assert np.allclose(daily["cost"], 0.0005 * daily["turnover"] + 0.0001 * 0.5)
+    assert np.allclose(daily["cost"], 0.0005 * daily["turnover"] + 0.0001 * 0.5)   # the paper's costs, whatever the run trained with
     assert np.allclose(daily["net"], daily["gross"] - daily["cost"])
 
 
@@ -168,6 +168,8 @@ def test_rolling_run_saves_resumes_and_summarizes(cfg, panel, tmp_path, monkeypa
     capsys.readouterr()
     afsa.run.run_config(cfg, [0, 1], [2001, 2002], panel32, max_models=3)    # nothing left to do
     assert "0 of 4 models to train" in capsys.readouterr().out
+    log = json.loads((run_dir / "provenance.json").read_text())             # the code version, once per call that trained
+    assert len(log) == 1 and log[0]["models"] == 4 and len(log[0]["afsa_sha256"]) == 16
     table = summarize(run_dir)
     assert list(table.index) == ["seed0", "seed1", "mean", "sd"] and table.loc["seed0", "days"] == 110
     assert np.isfinite(table.loc["mean", ["SR", "SR_net", "beta", "turnover"]].astype(float)).all()
