@@ -68,13 +68,47 @@ def band_step(h_prev: np.ndarray, w_t: np.ndarray, member_t: np.ndarray, delta: 
     return h / s if s > 0 else w_t                                           # unit gross exposure
 
 
-def band_path(W: np.ndarray, member: np.ndarray, delta: float, h0: np.ndarray | None = None, rescale: str = "all",
-              eta: float = 1.0) -> np.ndarray:
-    """Books [T, S] of a band of width delta around the targets W, starting from h0 (cash if None)."""
+def band_path(W: np.ndarray, member: np.ndarray, delta: float | np.ndarray, h0: np.ndarray | None = None,
+              rescale: str = "all", eta: float | np.ndarray = 1.0) -> np.ndarray:
+    """Books [T, S] of a band of width delta around the targets W, starting from h0 (cash if None). delta and eta may
+    also be arrays [T, S] that give each stock its own band width and speed on each day (the learned trading rule,
+    afsa Config.trade_head)."""
     H, h = np.empty_like(W), (np.zeros(W.shape[1]) if h0 is None else h0)
     for t in range(len(W)):
-        h = H[t] = band_step(h, W[t], member[t], delta, rescale, eta)
+        d = delta[t] if np.ndim(delta) == 2 else delta
+        e = eta[t] if np.ndim(eta) == 2 else eta
+        h = H[t] = band_step(h, W[t], member[t], d, rescale, e)
     return H
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    return 0.5 * (1.0 + np.tanh(0.5 * x))                                     # 1 / (1 + e^-x), without overflow
+
+
+def state_path(W: np.ndarray, member: np.ndarray, rules: list[tuple[np.ndarray, np.ndarray, np.ndarray]], has: np.ndarray,
+               h0: np.ndarray | None = None, band0: float = 4e-4, band_max: float = 3.2e-3, eta0: float = 0.99,
+               widen: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Books [T, S] of the learned trading rule that sees the book (afsa.model.trade_book_state, Config.trade_state)
+    around the targets W, from h0 (cash if None), with the movers-only rescale.
+
+    Each rule is (A, K, V): the logits of its band width and speed before the view of the book [T, S], and the weights
+    of each day's model on that view [T, 2, 3] (rows: band, speed). On day t the view of a stock is
+    (log(1 + n|h|), log(1 + n|w|), sign(h) sign(w - h)), with h the book held since the day before, w the day's target
+    and n the day's number of members. With several rules (a seed ensemble), each one's band width and speed are set
+    on the same book and averaged. Members without a signal (has [T, S] false) get (band0, eta0). `widen` [T, S], if
+    given, is added to the band width (analysis/rl/pessimism.py). Returns the books and the band widths and speeds used."""
+    H, Dl, Et = np.empty_like(W), np.empty_like(W), np.empty_like(W)
+    h = np.zeros(W.shape[1]) if h0 is None else h0
+    for t in range(len(W)):
+        n = member[t].sum()
+        f = np.stack([np.log1p(n * np.abs(h)), np.log1p(n * np.abs(W[t])), np.sign(h) * np.sign(W[t] - h)], -1)
+        d = sum(np.where(has[t], band_max * _sigmoid(A[t] + f @ V[t, 0]), band0) for A, _, V in rules) / len(rules)
+        e = sum(np.where(has[t], _sigmoid(K[t] + f @ V[t, 1]), eta0) for _, K, V in rules) / len(rules)
+        if widen is not None:
+            d = d + widen[t]
+        h = H[t] = band_step(h, W[t], member[t], d, "moved", e)
+        Dl[t], Et[t] = d, e
+    return H, Dl, Et
 
 
 def ensemble(Ws: list[np.ndarray]) -> np.ndarray:

@@ -38,6 +38,7 @@ Sources: [analysis/gap/DATASETS.md](analysis/gap/DATASETS.md) for this table; [a
 | `tests/` | Unit tests (synthetic data; tests that need the data files are skipped without them). `tests/hardware/` has GPU timing tests |
 | `analysis/gap/` | Scripts and reports on the gap to the paper, the hyperparameter scans and the dataset comparison |
 | `analysis/characteristics/` | How each of the 39 characteristics is built from WRDS, and how it matches the Chen-Pelger-Zhu panel |
+| `analysis/rl/` | The course's reinforcement-learning lecture condensed, how it applies to AFSA, and tests of a learned trading rule built from it |
 | `slides/` | The Phase I and final presentations (Beamer, pdfLaTeX) |
 | `CLAUDE.md` | The project guide: data, model, every open decision with its reason, status, all results and open questions. It also serves as instructions for the coding assistant |
 | `NOTES.md` | Details behind the guide |

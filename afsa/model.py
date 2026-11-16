@@ -24,6 +24,7 @@ from .config import CHARACTERISTICS, N_CHAR, N_LEVEL, NEUTRAL_SETS, Config
 from .panel import Batch, BlockBatch
 
 ATTENTION_PARAMS = ("W_rank", "W_level", "Q")       # the factor model; every other parameter is the sequence model
+STATE_FEATURES = ("position", "target", "adds")     # what the learned trading rule sees of the book (Config.trade_state)
 
 
 def squash(kernel: torch.Tensor, lam: float) -> torch.Tensor:
@@ -59,6 +60,13 @@ def init_member(cfg: Config, seed: int) -> dict[str, torch.Tensor]:
         p[f"norm_b{l}"] = torch.zeros(d)
     p["head_w"] = uniform((d,), d)
     p["head_b"] = uniform((), d)
+    if cfg.trade_head:                  # the learned trading rule (AFSAModel.dials): zero parameters are the fixed band
+        p["delta_w"], p["delta_b"] = torch.zeros(d), torch.zeros(())
+        p["eta_w"], p["eta_b"] = torch.zeros(d), torch.zeros(())
+        if cfg.trade_state:             # what the rule sees of the book (trade_book_state); zero = the rule without it
+            p["delta_v"], p["eta_v"] = torch.zeros(len(STATE_FEATURES)), torch.zeros(len(STATE_FEATURES))
+        if cfg.trade_market:            # what it sees of the day's market (AFSAModel.dial_logits); zero = without it
+            p["delta_u"], p["eta_u"] = torch.zeros(d), torch.zeros(d)
     return p
 
 
@@ -97,31 +105,74 @@ def explained_variance(eps: torch.Tensor, R: torch.Tensor, member: torch.Tensor,
     return ((1 - ratio) * ok).sum(1) / ok.sum(1).clamp_min(1)
 
 
-def trade_book(w: torch.Tensor, member: torch.Tensor, band: float, eta: float) -> torch.Tensor:
+def trade_book(w: torch.Tensor, member: torch.Tensor, band: float | torch.Tensor, eta: float | torch.Tensor) -> torch.Tensor:
     """The trading layer (CLAUDE.md section 7): from the targets w [M, D+1, U] (one column per stock) to the books held.
 
     Day 0's book is day 0's target. Each later day: gap = target - book; trade = eta * sign(gap) * max(|gap| - band, 0);
     draft = book + trade, 0 outside the day's universe. The stocks that trade (or are closed) are resized together so
     that ||book||_1 = 1, and the others keep their position exactly. If only new positions trade (the resize factor would
     not be positive), the whole draft is rescaled; an empty draft takes the target. Differentiable almost everywhere.
+
+    band and eta are numbers (Config.band, Config.band_eta), or tensors shaped like w that give each stock its own value
+    on each day (the learned trading rule, Config.trade_head): day t's trade uses day t's values.
     """
     book, books = w[:, 0], [w[:, 0]]
     for t in range(1, w.shape[1]):
-        gap = w[:, t] - book
-        trade = eta * torch.sign(gap) * torch.relu(gap.abs() - band)
-        on = member[:, t]
-        draft = (book + trade) * on
-        moved = (trade != 0) | (~on & (book != 0))
-        size = draft.abs()
-        held = (size * ~moved).sum(-1, keepdim=True)
-        movers = (size * moved).sum(-1, keepdim=True)
-        total = held + movers
-        c = (1 - held) / torch.where(movers > 0, movers, torch.ones_like(movers))
-        resized = torch.where(moved, c * draft, draft)
-        uniform = draft / torch.where(total > 0, total, torch.ones_like(total))
-        book = torch.where((movers > 0) & (c > 0), resized, torch.where(total > 0, uniform, w[:, t]))
+        band_t = band[:, t] if torch.is_tensor(band) else band
+        eta_t = eta[:, t] if torch.is_tensor(eta) else eta
+        book = book_step(book, w[:, t], member[:, t], band_t, eta_t)
         books.append(book)
     return torch.stack(books, 1)
+
+
+def book_step(book: torch.Tensor, target: torch.Tensor, on: torch.Tensor, band, eta) -> torch.Tensor:
+    """One day of `trade_book`: from yesterday's book [M, U] to today's, given today's target and membership [M, U] and
+    the day's band width and speed (numbers, or [M, U] tensors)."""
+    gap = target - book
+    trade = eta * torch.sign(gap) * torch.relu(gap.abs() - band)
+    draft = (book + trade) * on
+    moved = (trade != 0) | (~on & (book != 0))
+    size = draft.abs()
+    held = (size * ~moved).sum(-1, keepdim=True)
+    movers = (size * moved).sum(-1, keepdim=True)
+    total = held + movers
+    c = (1 - held) / torch.where(movers > 0, movers, torch.ones_like(movers))
+    resized = torch.where(moved, c * draft, draft)
+    uniform = draft / torch.where(total > 0, total, torch.ones_like(total))
+    return torch.where((movers > 0) & (c > 0), resized, torch.where(total > 0, uniform, target))
+
+
+def state_features(book: torch.Tensor, target: torch.Tensor, n: torch.Tensor) -> torch.Tensor:
+    """The rule's view of each stock's book on one day: log(1 + n|h|), log(1 + n|w|) and sign(h) sign(w - h), with h the
+    position held since yesterday, w today's target and n the day's number of members, so an average position counts
+    as 1. The last is +1 if trading towards the target adds to the position, -1 if it reduces or reverses it, and 0 for
+    no position. book, target [M, U], n [M, 1]; returns [M, U, 3]."""
+    return torch.stack([torch.log1p(n * book.abs()), torch.log1p(n * target.abs()),
+                        torch.sign(book) * torch.sign(target - book)], -1)
+
+
+def trade_book_state(w: torch.Tensor, member: torch.Tensor, a: torch.Tensor, k: torch.Tensor, has_signal: torch.Tensor,
+                     v_delta: torch.Tensor, v_eta: torch.Tensor, band0: float, band_max: float,
+                     eta0: float) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """`trade_book` with dials that also see the book (Config.trade_state; analysis/rl/TRADING_STATE.md). On day t,
+    with f the stock's `state_features` from yesterday's book and today's target:
+
+        delta = band_max * sigmoid(a + v_delta' f),    eta = sigmoid(k + v_eta' f)
+
+    for members with a signal, and (band0, eta0) for the others. a, k [M, D+1, U] are the logits of `AFSAModel.dial_logits`
+    (they do not depend on the book) and v_delta, v_eta [M, 3] the rule's weights on f, so v = 0 gives `trade_book` with
+    the dials of `AFSAModel.dials`. Day 0 holds its target; its dials are those of holding it (stored, never traded).
+    Returns the books and the dials used, [M, D+1, U] each."""
+    n = member.sum(-1, keepdim=True).to(w.dtype)
+    book, books, deltas, etas = w[:, 0], [], [], []
+    for t in range(w.shape[1]):
+        f = state_features(book, w[:, t], n[:, t])
+        delta = torch.where(has_signal[:, t], band_max * torch.sigmoid(a[:, t] + torch.einsum("muf,mf->mu", f, v_delta)), band0)
+        eta = torch.where(has_signal[:, t], torch.sigmoid(k[:, t] + torch.einsum("muf,mf->mu", f, v_eta)), eta0)
+        if t > 0:
+            book = book_step(book, w[:, t], member[:, t], delta, eta)
+        books.append(book), deltas.append(delta), etas.append(eta)
+    return torch.stack(books, 1), torch.stack(deltas, 1), torch.stack(etas, 1)
 
 
 class AFSAModel(nn.Module):
@@ -239,8 +290,10 @@ class AFSAModel(nn.Module):
         h = F.layer_norm(u + z, (u.shape[-1],))
         return torch.addcmul(getattr(self, f"norm_b{l}")[:, None, :], h, getattr(self, f"norm_g{l}")[:, None, :])
 
-    def signal(self, x: torch.Tensor, train: bool = False, gens=None, n_cols: list[int] | None = None) -> torch.Tensor:
-        """omega^port = LongConv(lagged residuals). x: [M, T, U, L], oldest lag first. Returns [M, T, U].
+    def signal(self, x: torch.Tensor, train: bool = False, gens=None, n_cols: list[int] | None = None,
+               hidden: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """omega^port = LongConv(lagged residuals). x: [M, T, U, L], oldest lag first. Returns [M, T, U], and with
+        `hidden` also the hidden state that the read-out reads, [M, T, U, d] (the input of `dials`).
 
         Each lagged residual is embedded as u[l, h] = in_w[h] x[l] + in_b[h]; a block computes y = K * u + D u
         along time (causal: y[i] = sum_j u[j] K[i - j]) followed by GELU, dropout, a linear layer, a residual
@@ -276,7 +329,57 @@ class AFSAModel(nn.Module):
             u_last = u[:, :, -1, :]
             conv = torch.einsum("mnlh,mhl->mnh", u, k.flip(-1)) + getattr(self, f"skip{last}")[:, None, :] * u_last
         h = self._block(last, u_last, conv, self._keep((M, T, U, d), x, gens, n_cols) if drop else None)
-        return torch.baddbmm(self.head_b[:, None, None], h, self.head_w[:, :, None]).view(M, T, U)
+        s = torch.baddbmm(self.head_b[:, None, None], h, self.head_w[:, :, None]).view(M, T, U)
+        return (s, h.view(M, T, U, d)) if hidden else s
+
+    # ------------------------------------------------------------------ learned trading rule (analysis/rl/TRADING_RULE.md)
+    def dials(self, z: torch.Tensor, has_signal: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Each stock's band width and speed on each day (cfg.trade_head; TRADING_RULE.md, steps 3c and 3d), from the
+        sequence model's hidden state z [M, T, U, d]:
+
+            delta = head_band_max * sigmoid(logit(head_band0 / head_band_max) + delta_w' z + delta_b)
+            eta   = sigmoid(logit(head_eta0) + eta_w' z + eta_b)
+
+        The fixed offsets make zero parameters the fixed band (head_band0, head_eta0), so the weight decay of the
+        sequence model shrinks the rule towards it. Members without a signal (has_signal [M, T, U] false) keep the fixed
+        band. With cfg.trade_market the logits also hold the market term of `dial_logits`. With cfg.trade_state the
+        dials also depend on the book, and `trade_book_state` sets them day by day from `dial_logits` instead.
+        Returns delta and eta, [M, T, U] each."""
+        cfg = self.cfg
+        a, k = self.dial_logits(z, has_signal)
+        delta = torch.where(has_signal, cfg.head_band_max * torch.sigmoid(a), cfg.head_band0)
+        eta = torch.where(has_signal, torch.sigmoid(k), cfg.head_eta0)
+        return delta, eta
+
+    def dial_logits(self, z: torch.Tensor, has_signal: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """The logits of the band width and the speed before any view of the book, [M, T, U] each:
+
+            a = logit(head_band0 / head_band_max) + delta_w' z + delta_b  [+ delta_u' zbar_t]
+            k = logit(head_eta0) + eta_w' z + eta_b  [+ eta_u' zbar_t]
+
+        The bracketed market term is on with cfg.trade_market (analysis/rl/TRADING_STATE.md): zbar_t [d] is the mean of z
+        over the day's stocks with a signal, so it shifts every stock's dials of that day by the same amount."""
+        cfg = self.cfg
+        a0 = math.log(cfg.head_band0 / (cfg.head_band_max - cfg.head_band0))
+        k0 = math.log(cfg.head_eta0 / (1 - cfg.head_eta0))
+        a = torch.einsum("mtud,md->mtu", z, self.delta_w) + self.delta_b[:, None, None]
+        k = torch.einsum("mtud,md->mtu", z, self.eta_w) + self.eta_b[:, None, None]
+        if cfg.trade_market:
+            g = has_signal.to(z.dtype)
+            zbar = torch.einsum("mtud,mtu->mtd", z, g) / g.sum(-1, keepdim=True).clamp_min(1)    # [M, T, d]
+            a = a + torch.einsum("mtd,md->mt", zbar, self.delta_u)[:, :, None]
+            k = k + torch.einsum("mtd,md->mt", zbar, self.eta_u)[:, :, None]
+        return a + a0, k + k0
+
+    def dial_inputs(self, z: torch.Tensor, has_signal: torch.Tensor) -> dict[str, torch.Tensor]:
+        """What `_portfolio` needs to run the learned rule, on the rows of z [M, T, U, d]: the dials themselves
+        ("delta", "eta"), or with cfg.trade_state their logits and who has a signal ("a", "k", "has"), since the dials
+        are then set day by day from the book. [M, T, U] each."""
+        if self.cfg.trade_state:
+            a, k = self.dial_logits(z, has_signal)
+            return {"a": a, "k": k, "has": has_signal}
+        delta, eta = self.dials(z, has_signal)
+        return {"delta": delta, "eta": eta}
 
     # ------------------------------------------------------------------ neutrality (analysis/gap/EXTENSION.md)
     @staticmethod
@@ -308,7 +411,9 @@ class AFSAModel(nn.Module):
 
         Returns wF [M,T,U,K], eps [M,T,U], w_port and w [M,D+1,U] (row L first), ret/turnover/short [M,D], ev [M],
         and the residuals, excess returns and membership of the rows that get weights (eps_d, R_d, member_d
-        [M,D+1,U]). A BlockBatch gives the same outputs, except wF, eps and w_port (`_forward_blocks`).
+        [M,D+1,U]); with cfg.trade_head also each stock's band width and speed, delta and eta [M,D+1,U], and with
+        cfg.trade_state their logits before the view of the book and who has a signal (dial_a, dial_k, has). A BlockBatch
+        gives the same outputs, except wF, eps and w_port (`_forward_blocks`).
         """
         cfg, L = self.cfg, self.cfg.lookback
         if isinstance(b, BlockBatch) != (cfg.entry_rule == "history"):
@@ -325,7 +430,12 @@ class AFSAModel(nn.Module):
             x = x.cumsum(-1)                                                                   # residual price path over the lookback
         n_cols = b.n_cols.tolist() if (train and gens is not None and cfg.dropout > 0) else None
         has_signal = b.member if cfg.entry_rule == "member" else b.valid                       # "run": no signal without L prior days
-        w_port = self.signal(x, train, gens, n_cols) * has_signal[:, L:]
+        if cfg.trade_head:                                                                     # the learned trading rule
+            w_port, z = self.signal(x, train, gens, n_cols, hidden=True)
+            dial = self.dial_inputs(z, has_signal[:, L:])
+        else:
+            w_port, dial = self.signal(x, train, gens, n_cols), None
+        w_port = w_port * has_signal[:, L:]
         if cfg.signal_center:
             w_port = self.center(w_port, has_signal[:, L:])
         w = self.project(wF[:, L:], (G[:, L:], chol[:, L:]), w_port)                           # (omega^eps)' omega^port
@@ -335,7 +445,7 @@ class AFSAModel(nn.Module):
             w = w * has_signal[:, L:]
         w = w / w.abs().sum(-1, keepdim=True).clamp_min(1e-12)                                 # ||omega||_1 = 1
         return {"wF": wF, "eps": eps, "w_port": w_port, "w": w,
-                **self._portfolio(w, b.R[:, L:], eps[:, L:], b.member[:, L:], b.rf[:, L:])}
+                **self._portfolio(w, b.R[:, L:], eps[:, L:], b.member[:, L:], b.rf[:, L:], dial)}
 
     def _forward_blocks(self, b: BlockBatch, train: bool, gens) -> dict[str, torch.Tensor]:
         """forward on the month blocks (entry_rule history). Factors and residuals are computed on every row of the NB
@@ -359,7 +469,12 @@ class AFSAModel(nn.Module):
         if cfg.cumulative:
             x = x.cumsum(-1)                                                                   # residual price path over the lookback
         n_cols = [S] * M if (train and gens is not None and cfg.dropout > 0) else None
-        w_port = self.signal(x, train, gens, n_cols) * b.signal
+        if cfg.trade_head:                                                                     # the learned trading rule
+            w_port, z = self.signal(x, train, gens, n_cols, hidden=True)
+            dial = self.dial_inputs(z, b.signal)
+        else:
+            w_port, dial = self.signal(x, train, gens, n_cols), None
+        w_port = w_port * b.signal
         if cfg.signal_center:
             w_port = self.center(w_port, b.signal)
         w = self.project(wF[m, q], (G[m, q], chol[m, q]), w_port)                              # (omega^eps)' omega^port on the day
@@ -373,20 +488,34 @@ class AFSAModel(nn.Module):
         on, idx = b.slot >= 0, b.slot.clamp_min(0)
 
         def per_stock(v: torch.Tensor) -> torch.Tensor:                                        # [M, D+1, S] -> [M, D+1, U]
-            return torch.gather(v, 2, idx) * on
+            return torch.gather(v, 2, idx) & on if v.dtype == torch.bool else torch.gather(v, 2, idx) * on
         w = per_stock(w)
+        if dial is not None:                                                                   # each stock's dials in its column
+            dial = {key: per_stock(v) for key, v in dial.items()}
         return {"wF": wF, "eps": eps, "w_port": w_port, "w": w,
-                **self._portfolio(w, per_stock(R_rows[m, q]), per_stock(eps[m, q]), on, b.rf)}
+                **self._portfolio(w, per_stock(R_rows[m, q]), per_stock(eps[m, q]), on, b.rf, dial)}
 
     def _portfolio(self, w: torch.Tensor, R: torch.Tensor, eps: torch.Tensor, member: torch.Tensor,
-                   rf: torch.Tensor) -> dict[str, torch.Tensor]:
+                   rf: torch.Tensor, dial: dict[str, torch.Tensor] | None = None) -> dict[str, torch.Tensor]:
         """Return, costs and explained variance of the weights w [M, D+1, U]: day 0 holds the weights before the first
         loss day, days 1..D are the loss days. R, eps, member [M, D+1, U] and rf [M, D+1] are on the same days.
-        With the trading layer on (cfg.band > 0 or cfg.band_eta < 1) return and costs are the book's (`trade_book`);
-        "book" is w otherwise."""
+        With the trading layer on (cfg.band > 0 or cfg.band_eta < 1) or the learned trading rule (cfg.trade_head: `dial`
+        is `dial_inputs` on the same days), return and costs are the book's (`trade_book`, or `trade_book_state` with
+        cfg.trade_state); "book" is w otherwise. The rule's band widths and speeds are returned as "delta" and "eta"
+        [M, D+1, U]; with cfg.trade_state also its logits before the view of the book and who has a signal ("dial_a",
+        "dial_k", "has"), which a book carried across years needs to be scored (analysis/rl/trading_state.py)."""
         cfg = self.cfg
-        book = trade_book(w, member, cfg.band, cfg.band_eta) if (cfg.band > 0 or cfg.band_eta < 1) else w
-        return {
+        if dial is not None and cfg.trade_state:
+            book, delta, eta = trade_book_state(w, member, dial["a"], dial["k"], dial["has"], self.delta_v, self.eta_v,
+                                                cfg.head_band0, cfg.head_band_max, cfg.head_eta0)
+        elif dial is not None:
+            delta, eta = dial["delta"], dial["eta"]
+            book = trade_book(w, member, delta, eta)
+        elif cfg.band > 0 or cfg.band_eta < 1:
+            book = trade_book(w, member, cfg.band, cfg.band_eta)
+        else:
+            book = w
+        out = {
             "eps_d": eps, "R_d": R, "member_d": member, "book": book,
             "ret": (book[:, 1:] * R[:, 1:]).sum(-1),
             "turnover": (book[:, 1:] - book[:, :-1]).abs().sum(-1),
@@ -396,6 +525,11 @@ class AFSAModel(nn.Module):
             # paper's formula charges it on one whole unit: the difference is rf * (1 - sum(w)).
             "rf_drag": rf[:, 1:] * (1 - book[:, 1:].sum(-1)),
         }
+        if dial is not None:
+            out["delta"], out["eta"] = delta, eta
+        if dial is not None and cfg.trade_state:
+            out["dial_a"], out["dial_k"], out["has"] = dial["a"], dial["k"], dial["has"]
+        return out
 
     def objective(self, out: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Net Sharpe ratio + lambda_var * explained variance, per model ([M]); to be maximized."""

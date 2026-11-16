@@ -145,6 +145,10 @@ def test_lookback_rules_score_only_the_years_they_name(monkeypatch):
     last8 = lookback.make_plan(nets, years, cands[0], "last 8 years")
     assert all(last8[y] == every[y] for y in range(2001, 2010))              # at most 8 earlier years: the same rule
     assert last8[2012] == max(cands, key=lambda c: selection.mean_sharpe(nets[c][window])) == cands[2]
+    last4 = lookback.make_plan(nets, years, cands[0], "last 4 years")
+    assert all(last4[y] == every[y] for y in range(2001, 2006))              # at most 4 earlier years: the same rule
+    recent = (years >= 2008) & (years <= 2011)
+    assert last4[2012] == max(cands, key=lambda c: selection.mean_sharpe(nets[c][recent]))
     mixed = lookback.make_plan(nets, years, cands[0], "recent return, full risk")
     assert all(mixed[y] == every[y] for y in range(2001, 2010))
     hand = {c: nets[c][window, 0].mean() / nets[c][before, 0].std(ddof=1) for c in cands}
@@ -161,7 +165,7 @@ def test_lookback_rules_score_only_the_years_they_name(monkeypatch):
     monkeypatch.undo()
     later = {c: x.copy() for c, x in nets.items()}                           # the last year's results change no choice
     later[cands[0]][years == 2012] += 1.0
-    for rule in lookback.WALK:
+    for rule in lookback.WALK + lookback.ADDED:
         assert lookback.make_plan(later, years, cands[0], rule) == lookback.make_plan(nets, years, cands[0], rule)
     with pytest.raises(ValueError):                                          # one series per candidate: a layer, not seeds
         lookback.moments({cands[0]: np.zeros((len(years), 3))}, years)

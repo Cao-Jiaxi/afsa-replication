@@ -118,6 +118,13 @@ class Config:
     # ---- trading layer (CLAUDE.md section 7; off at the defaults: the book is the target) ----------
     band: float = _f(0.0, "no-trade band inside the model: each day the book skips a stock whose gap to the target is at most `band` and trades the rest of the gap less `band`; return and costs are the book's (0 = no layer)")
     band_eta: float = _f(1.0, "share of the remaining gap the book trades each day (1 = all of it)")
+    # ---- learned trading rule (analysis/rl/TRADING_RULE.md; off at the default) -------------------------
+    trade_head: bool = _f(False, "learned trading rule: the sequence model's hidden state also gives each stock a band width and a speed for the trading layer, every day; return and costs are the book's (analysis/rl/TRADING_RULE.md)")
+    head_band0: float = _f(4e-4, "learned trading rule: the band width where its parameters are zero, and that of members without a signal")
+    head_band_max: float = _f(3.2e-3, "learned trading rule: the largest band width")
+    head_eta0: float = _f(0.99, "learned trading rule: the speed where its parameters are zero, and that of members without a signal")
+    trade_state: bool = _f(False, "learned trading rule (needs trade_head): each day the band width and speed also see the stock's position, its target and whether the trade adds to the position or reduces it, so they are set inside the book's loop (analysis/rl/TRADING_STATE.md)")
+    trade_market: bool = _f(False, "learned trading rule (needs trade_head): the band width and speed also see the day's average hidden state over the stocks with a signal, the same for every stock of the day (analysis/rl/TRADING_STATE.md)")
     # ---- neutrality (analysis/gap/EXTENSION.md; off at the defaults) ------------------------------
     signal_center: bool = _f(False, "subtract from the day's signals their mean over the stocks that have one, so the sequence model cannot hold the same position in every stock")
     neutral: str = _f("", "make the day's weights orthogonal to the constant and to a set of the day's characteristic ranks before they are scaled to unit gross exposure: " + ", ".join(NEUTRAL_SETS) + " (empty = off)")
@@ -153,6 +160,12 @@ class Config:
             raise ValueError("lr_schedule must be constant or cosine")
         if self.band < 0 or not 0 < self.band_eta <= 1:
             raise ValueError("band must be at least 0 and band_eta in (0, 1]")
+        if not 0 < self.head_band0 < self.head_band_max or not 0 < self.head_eta0 < 1:
+            raise ValueError("the learned trading rule needs 0 < head_band0 < head_band_max and 0 < head_eta0 < 1")
+        if self.trade_head and (self.band > 0 or self.band_eta < 1):
+            raise ValueError("trade_head learns each stock's band and speed: leave band at 0 and band_eta at 1")
+        if (self.trade_state or self.trade_market) and not self.trade_head:
+            raise ValueError("trade_state and trade_market extend the learned trading rule: set trade_head true")
         if self.neutral and self.neutral not in NEUTRAL_SETS:
             raise ValueError(f"neutral must be empty or one of {list(NEUTRAL_SETS)}")
         if self.neutral and not self.nosignal_hedge:

@@ -39,7 +39,7 @@
   colorlinks=true,
   urlcolor=SBred,
   pdftitle={Attention Factors for Statistical Arbitrage: Final report},
-  pdfauthor={Jiaxi Cao}
+  pdfauthor={Jiaxi Cao, Ander Ibarrondo}
 }
 
 \newcommand{\learn}[1]{\textcolor{SBred}{#1}}
@@ -75,7 +75,7 @@
   \textbf{Attention Factors for\\Statistical Arbitrage}
 }
 \subtitle{Final report: model, data and results}
-\author[Jiaxi Cao]{Jiaxi Cao}
+\author[Cao, Ibarrondo]{Jiaxi Cao \and Ander Ibarrondo}
 \institute[Stony Brook]{Stony Brook University}
 \date[AMS 520]{%
   AMS 520: Machine Learning in Quantitative Finance\\Fall 2026
@@ -117,8 +117,9 @@
 
 % ---------------------------------------------------------------------------
 % Final report deck, in the style of the Phase I deck (slides/Phase1/main.tex).
-% Everything above is that file's preamble, unchanged apart from \subtitle and
-% pdftitle, so a Phase I frame pasted below compiles as it is. Copy any figure
+% Everything above is that file's preamble, unchanged apart from \subtitle,
+% pdftitle and the authors (Ander Ibarrondo added, 2026-11-16), so a Phase I
+% frame pasted below compiles as it is. Copy any figure
 % it uses from Phase1/assets/ into assets/.
 %
 % Conventions of the Phase I deck:
@@ -137,9 +138,11 @@
 %   order             title, main slides, References, Thanks!, backup slides
 % ---------------------------------------------------------------------------
 
-% Title pages (the user's requests, 2026-11-15). Sections 2 to 6 open with \sectiontitlepage, and every
+% Title pages (the user's requests, 2026-11-15). Every section opens with \sectiontitlepage (its optional
+% argument is a line set below the name, as a subsection's name is), and every
 % subsection opens with one too. The section's name is large and bold, at the same place on every title
-% page; a subsection's name is set below it in smaller type. \secname and \subsecname are plain text
+% page; a subsection's name is set below it in smaller type. A button at the lower right links back to the
+% contents slide (2026-11-16). \secname and \subsecname are plain text
 % (\insertsectionhead is a link and would take the link colour).
 \newcommand{\titlepageframe}[1]{%
   \begin{frame}{\phantom{Section}}
@@ -149,9 +152,10 @@
   \medskip
   {\color{SBred}\large#1\par}
   \vfill\vfill
+  \hfill{\setbeamerfont{button}{size=\footnotesize}\hyperlink{contents}{\beamerreturnbutton{Contents}}}
   \end{frame}
 }
-\newcommand{\sectiontitlepage}{\titlepageframe{\strut}}
+\newcommand{\sectiontitlepage}[1][\strut]{\titlepageframe{#1}}
 \AtBeginSubsection[]{\titlepageframe{\subsecname}}
 
 % Two departures from Phase I (the user's instructions, 2026-11-15):
@@ -164,6 +168,12 @@
 % Links, such as the entries of the contents slide, in SBU red like the frame titles
 % (hyperref's default link colour is a brighter red).
 \hypersetup{linkcolor=SBred}
+% Charts drawn in the deck (the dot chart of the band subsection).
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+% A box of the flow diagrams, in a colour: flowbox=SBred. Defined here, since a frame's body cannot hold #1.
+\tikzset{flowbox/.style={draw=#1,fill=#1!8,thick,rounded corners=1pt,minimum height=7mm,inner sep=3pt,
+  text=#1,font=\scriptsize\bfseries,align=center}}
 
 \begin{document}
 \begin{frame}{\phantom{Attention Factors for Statistical Arbitrage}}
@@ -175,18 +185,19 @@
 
 % --- Main slides ------------------------------------------------------------
 
-\begin{frame}{Contents}
+\begin{frame}[label=contents]{Contents}
 \tableofcontents
-\end{frame}
-
-\begin{frame}{Recap: The Paper's Roadmap}
-\claim{Train the comparison portfolios and trading policy together.}
-\strategyroadmap
-Phase I explained this model. Today we build it, feed it our own data and test it.
 \end{frame}
 
 % ============================================================================
 \section{Building the model}
+\sectiontitlepage
+
+\begin{frame}{Recap: The Paper's Roadmap}
+\claim{Train the comparison portfolios and trading policy together.}
+\strategyroadmap
+Phase I explained this model. Today we build it, feed it our own data, test it and modify it.
+\end{frame}
 
 \begin{frame}{The Model in Four Steps}
 \small
@@ -283,6 +294,41 @@ return: the book pays $R_f$ on its net position $\sum_j\omega_{j,t-1}$.
 \end{frame}
 
 
+% ----------------------------------------------------------------------------
+% The paper's Figure 2 against ours, before and after costs: a subsection of the model part since 2026-11-16
+% (the user's request). Figure: analysis/gap/fig2_ours.py --deck. The paper's estimated curve after costs and
+% its two cost paths: analysis/gap/PAPER_BY_YEAR.md (constant cost; cost scaled by era as our K = 30 model's).
+\subsection{The paper's Figure 2, after costs}
+
+\begin{frame}{The Paper's Figure 2 Is Before Costs}
+\small
+Figure 2 of the paper is \textbf{before costs}, though neither caption nor text says so.\\
+The paper reads it as ``a strong performance throughout the full sample''.
+\par\smallskip
+\includegraphics[width=\linewidth]{assets/fig2_K030.png}
+\claim{After costs, the paper's curve is about flat from 2010, close to ours.}
+\src{Paper: Figure 2 and Table 2, $K=30$; after costs, our estimate (next slide). Ours: $K=30$, seed ensemble with the no-trade band,
+on the dataset we use (see \emph{Choosing the top 500}); hindsight knows the future, walk-forward only the past
+(see \emph{Without the band: hindsight and walk-forward}). Paper: 245 days a year; ours: every trading day.}
+\end{frame}
+
+\begin{frame}{How We Estimate the Paper's Curve after Costs}
+\begin{enumerate}
+\item \textbf{Read the curve.} We digitized the $K=30$ cumulative return $V_t$ of Figure 2:
+      the value of 1 invested at the start of 1998. Its daily returns average $16.65\%$ a year:
+      Table 2's return \emph{before} costs.
+\item \textbf{The cost.} Table 2 gives only its average:
+      $\mu-\mu_{\rm net}=16.66\%-9.52\%=7.14\%$ a year.
+\item \textbf{Take it off evenly, every day,} and compound into the cumulative return after costs:
+\[
+V^{\rm net}_t=V^{\rm net}_{t-1}\Big(\frac{V_t}{V_{t-1}}-c\Big),
+\qquad
+c=\frac{7.14\%}{252}\approx2.8\ \text{bp a day}.
+\]
+\end{enumerate}
+\claim{The paper's own average cost takes its cumulative return from 47.8 down to 9.0.}
+\end{frame}
+
 % ============================================================================
 \section{Building the data}
 \sectiontitlepage
@@ -322,11 +368,6 @@ Compustat Global, Datastream & Not mentioned & No access\\
 \bottomrule
 \end{tabular}
 \end{center}
-\begin{itemize}
-\item Our account has no non-US database.
-\item A firm without a US listing is out of reach: Kia, Hyundai, Samsung.
-\item The paper also takes ``the securities on CRSP'': the 109 firms it names are all in our CRSP.
-\end{itemize}
 \claim{Our data is limited to US-listed securities.}
 \end{frame}
 
@@ -389,7 +430,6 @@ Resid\_Var, Beta (2016 factors) & $99.95\%$, $99.77\%$\\
 \bottomrule
 \end{tabular}
 \end{center}
-\claim{Where the panel can check us, we match it.}
 \end{frame}
 
 \begin{frame}{Missing Values: The Paper Fills, We Do Not}
@@ -460,6 +500,209 @@ E & missing & $1000$ (3 years old) & $+0.50$ & $0$\\
 \claim{Filling gives E a signal it does not have and squeezes the others; no filling does neither.}
 \end{frame}
 
+% ----------------------------------------------------------------------------
+% The top 500: a subsection of the data part since 2026-11-16 (the user's request).
+\subsection{Choosing the top 500}
+
+\begin{frame}{Top 500 Stocks, or Top 500 Companies?}
+The paper takes the 500 largest \emph{stocks}. A company can then be on the list twice:
+\begin{center}
+\small
+\begin{tabular}{@{}llr@{}}
+\toprule
+Company & Two names on the list & Correlation of daily returns\\
+\midrule
+Alphabet & GOOGL, GOOG & $0.99$\\
+Comcast & CMCSA, CMCSK & $0.98$\\
+Berkshire Hathaway & Class A, class B & $0.95$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\textbf{The worry: collinearity.} Two almost identical return series.
+A regression on the stocks, or the inverse of their covariance matrix,
+becomes unstable: large positions of opposite sign in the two names.
+
+\smallskip
+\textbf{The alternative:} one share class per company, as in our Phase I universe.
+
+\smallskip
+\textbf{How often:} on average 4 of the 500 names are such a second name.
+Today: Alphabet and Berkshire.
+\end{frame}
+
+\begin{frame}{Why Collinearity Is Not an Issue}
+\small
+\setlength{\abovedisplayskip}{3pt}
+\setlength{\belowdisplayskip}{3pt}
+Collinearity does harm only where a matrix over the \emph{stocks} is inverted, as in a regression
+on them: twin columns make it singular.
+
+\medskip
+\claim{1. The model inverts only a $K\times K$ matrix, over the baskets}\par
+\[
+\beta^{\mathsf T}=A^{\mathsf T}\big(AA^{\mathsf T}+\lambda_{\rm ridge}I_K\big)^{-1},
+\qquad
+A:\ K\text{ baskets (rows)}\times N\text{ stocks (columns)}.
+\]
+$AA^{\mathsf T}$ is singular only if the \emph{baskets} are linearly dependent.
+Twin stocks are two equal \emph{columns}, and it stays invertible:
+\[
+A=\begin{bmatrix}0.4&0.4&0.2\\0.1&0.1&0.8\end{bmatrix}
+\quad\Rightarrow\quad
+AA^{\mathsf T}=\begin{bmatrix}0.36&0.24\\0.24&0.66\end{bmatrix},
+\qquad\det=0.18\neq0.
+\]
+Two baskets that look alike are what $\lambda_{\rm ridge}$ is for.
+
+\smallskip
+\claim{2. The book holds twins as one bet}\par
+Twins have almost the same residuals, so LongConv gives them almost the same signal.
+In our ensemble, 1998--2021, the two classes have the same sign on $86\%$ of days,
+and together hold $0.32\%$ of the book; two ordinary names hold $0.37\%$.
+
+\claim{No large opposite positions: we keep the paper's 500 stocks.}
+\end{frame}
+
+\begin{frame}{The List Changes Every Month}
+The paper trades the 500 largest stocks by last month's market cap.
+\begin{itemize}
+\item Each month 14 to 15 of the 500 names are new; 30 to 46 in 2000 and late 2008.
+\item Many come back: a name leaves 5,608 times in 1990--2021, and 3,343 times one returns within 12 months.
+\end{itemize}
+\textbf{Example: March 2000.} 46 of the 500 names were not on February's list.
+
+\medskip
+LongConv needs 30 past residuals for every stock it trades:
+\[
+s_{i,t-1}=\operatorname{LongConv}_{\learn{\theta}}
+(\underbrace{\epsilon_{i,t-30},\ldots,\epsilon_{i,t-1}}_{\text{computed inside the list}}).
+\]
+\claim{A new name has no residual history inside the list. Two choices follow.}
+\end{frame}
+
+\begin{frame}{Choice 1: Wait 30 Days, or Rebuild the History?}
+\small
+\begin{center}
+\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize]
+  % time runs to the right; the name enters the list at x = 50, and 30 days later is x = 78
+  \draw[-{Stealth[length=2mm]},draw=gray] (22,0) -- (109,0);
+  \draw[draw=gray,dashed] (50,0) -- (50,22);
+  \draw[draw=gray,dashed] (78,0) -- (78,22);
+  \node[below] at (50,0) {the name enters the list};
+  \node[below] at (78,0) {30 days later};
+  % 30-day wait
+  \node[anchor=east,font=\scriptsize\bfseries] at (21,16) {30-day wait};
+  \draw[draw=gray!50,fill=gray!12] (50,13) rectangle (78,19);
+  \node at (64,16) {no signal};
+  \draw[draw=SBred,fill=SBred!10,thick] (78,13) rectangle (106,19);
+  \node[text=SBred,font=\scriptsize\bfseries] at (92,16) {signal};
+  % rebuilt history
+  \node[anchor=east,font=\scriptsize\bfseries] at (21,6) {Rebuilt history};
+  \draw[draw=AttentionBlue,fill=AttentionBlue!8,thick] (22,3) rectangle (50,9);
+  \node[text=AttentionBlue,font=\scriptsize\bfseries] at (36,6) {30 residuals, rebuilt};
+  \draw[draw=SBred,fill=SBred!10,thick] (50,3) rectangle (106,9);
+  \node[text=SBred,font=\scriptsize\bfseries] at (78,6) {signal from the first day};
+\end{tikzpicture}
+\end{center}
+
+\textbf{30-day wait:} a new name gets no LongConv signal for its first 30 days on the list.
+It is still held, but only inside the hedges of other stocks.
+
+\smallskip
+\textbf{Rebuilt history:} on day $t$, recompute every member's 30 residuals over today's list,
+also for the days before the name entered.
+
+\begin{itemize}
+\item No look-ahead: today's list was fixed at the previous month-end.
+\item 1 March 2000: 435 names have a signal under the wait; rebuilt, 494.
+\end{itemize}
+\claim{Stock-days with a signal: $96.2\%\rightarrow99.8\%$.}
+\end{frame}
+
+\begin{frame}{Choice 2: Plain List, or Buffered List?}
+\small
+\textbf{Plain list}, as in the paper: the 500 largest each month. A name near rank 500 goes in and out.
+
+\smallskip
+\textbf{Buffered list:} the 500 largest, plus last month's members that still rank within 600.
+\begin{center}
+\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize,>={Stealth[length=2mm]}]
+  % Last month: the members.
+  \node[anchor=east] at (18,21) {Last month};
+  \draw[draw=SBred,fill=SBred!10,thick] (20,18) rectangle (64,24);
+  \node[text=SBred,font=\scriptsize\bfseries] at (42,21) {last month's list};
+  % This month: where those members now rank.
+  \node[anchor=east] at (18,3) {This month};
+  \draw[draw=SBred,fill=SBred!10,thick] (20,0) rectangle (64,6);
+  \node[text=SBred,font=\scriptsize\bfseries] at (42,3) {ranks 1--500};
+  \draw[draw=AttentionBlue,fill=AttentionBlue!8,thick] (64,0) rectangle (86,6);
+  \node[text=AttentionBlue,font=\scriptsize\bfseries] at (75,3) {501--600};
+  \draw[draw=gray!50,fill=gray!12] (86,0) rectangle (108,6);
+  \node at (97,3) {below 600};
+  \node[below] at (42,0) {every name is on the list};
+  \node[below] at (75,0) {members stay};
+  \node[below] at (97,0) {members leave};
+  % Members kept within the top 600; members below 600 dropped.
+  \draw[->,thick,SBred] (42,18) -- (42,6.6);
+  \draw[->,thick,AttentionBlue] (54,18) -- (73,6.6);
+  \draw[->,thick,dashed,gray!70] (62,18) -- (96,6.6);
+  \node[text=AttentionBlue,font=\scriptsize\bfseries,anchor=east] at (61.5,11) {kept};
+  \node[anchor=west] at (84,13) {dropped};
+\end{tikzpicture}
+\end{center}
+\begin{itemize}
+\item Half as many new names a month: $7.0$ instead of $14.9$.
+\item $543$ names a day instead of $499$.
+\end{itemize}
+\claim{The aim: a steadier list, so less trading and lower costs.}
+\end{frame}
+
+\begin{frame}{Four Datasets: Net Sharpe}
+Two choices, two options each:
+\begin{center}
+\begin{tabular}{@{}cllrr@{}}
+\toprule
+ & & & \multicolumn{2}{c}{Net Sharpe}\\
+\cmidrule(l){4-5}
+Dataset & List & 30-day history & 1998--2021 & 2022--2025\\
+\midrule
+A & Plain & 30-day wait & $1.56$ & $-0.23$\\
+B & Plain & Rebuilt & $1.62$ & $-0.15$\\
+C & Buffered & 30-day wait & $1.61$ & $-0.28$\\
+\textbf{D} & \textbf{Buffered} & \textbf{Rebuilt} & $\mathbf{1.70}$ & $\boldsymbol{-}\mathbf{0.18}$\\
+\midrule
+\multicolumn{3}{@{}l}{Paper, $K=30$} & $2.28$ & --\\
+\bottomrule
+\end{tabular}
+\end{center}
+1998--2021 is the paper's sample; 2022--2025 is our extension.
+\src{One setting for all four (see \emph{Training and its settings}): $K=30$, $\lambda_{\rm ridge}=10^{-4}$, 30 epochs, trained at 5 bp; the same 39 ranks, with no filling;
+three seeds traded as one ensemble. Net Sharpe: annualized, after 5 bp per traded unit and 1 bp on short exposure.
+Paper: Table 2, single models averaged over seeds.}
+\end{frame}
+
+\begin{frame}{What the Comparison Shows}
+\textbf{The buffered list trades less,} so it pays less in costs. Both with rebuilt history:
+\begin{center}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+1998--2021 & Plain list (B) & Buffered list (D)\\
+\midrule
+Sharpe before costs & $3.88$ & $3.89$\\
+Turnover per day & $0.65$ & $0.62$\\
+Costs, \% a year & $9.3$ & $9.0$\\
+Net Sharpe & $1.62$ & $\mathbf{1.70}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item Rebuilt history adds a little on both lists: $+0.06$ and $+0.09$.
+\item The differences are inside the noise, but 1996--1997 agree: D first, A last.
+\item The gap to the paper remains: $1.70$ against $2.28$.
+\end{itemize}
+\claim{We will use D: the buffered list with rebuilt history.}
+\end{frame}
+
 % ============================================================================
 \section{Training and its settings}
 \sectiontitlepage
@@ -490,7 +733,7 @@ E & missing & $1000$ (3 years old) & $+0.50$ & $0$\\
 \vfill
 \claim{The paper leaves much to tune: at its settings, our $K=30$ model nets a Sharpe ratio of $1.31$ on 1998--2021, against the paper's $2.28$.}
 \vfill
-\src{Single model, seed average, dataset D (next part): 5 bp, 30 epochs, $\lambda_{\rm ridge}=10^{-4}$.}
+\src{Single model, seed average, dataset D (see \emph{Choosing the top 500}): 5 bp, 30 epochs, $\lambda_{\rm ridge}=10^{-4}$.}
 \end{frame}
 
 \begin{frame}{What We Tune, What the Paper Leaves Open}
@@ -518,23 +761,34 @@ Batch size (days) & -- & 35, 49, 126, 252\\
 
 \subsection{Tunable: the paper gives a value}
 
-\begin{frame}{Tunable: Why Annualized?}
-\textbf{The paper:} net Sharpe $+\ \lambda_{\rm Var}\times{}$explained variance, with $\lambda_{\rm Var}=100$.
-It does not say whether the Sharpe ratio is daily or annualized.
-
-\medskip
-\textbf{Annualizing is a smaller $\lambda_{\rm Var}$.} With SR the daily net Sharpe and EV the explained variance:
+\begin{frame}{Tunable: $\lambda_{\rm Var}$ and the Sharpe Scale}
+\small
+\setlength{\abovedisplayskip}{3pt}
+\setlength{\belowdisplayskip}{3pt}
+\textbf{The paper:} net Sharpe $+\ \lambda_{\rm Var}\times{}$explained variance (EV), $\lambda_{\rm Var}=100$,
+daily or annualized not said. Ours is annualized; with SR the daily net Sharpe:
 \[
-\sqrt{252}\,\mathrm{SR}+100\,\mathrm{EV}=\sqrt{252}\,\big(\mathrm{SR}+6.3\,\mathrm{EV}\big),
-\qquad 6.3=100/\sqrt{252}.
+\sqrt{252}\,\mathrm{SR}+\lambda_{\rm Var}\,\mathrm{EV}
+=\sqrt{252}\,\Big(\mathrm{SR}+\frac{\lambda_{\rm Var}}{\sqrt{252}}\,\mathrm{EV}\Big).
 \]
-AdamW ignores the constant factor $\sqrt{252}$.
-
-\medskip
-\textbf{Why it matters.} At the end of training, the Sharpe term is $1\%$ of the daily objective
-and $16\%$ of the annualized one. With the daily scale, explained variance decides almost everything:
-on 1996--1997 the net Sharpe is about a quarter lower.
-\claim{We train on the annualized net Sharpe: in effect, $\lambda_{\rm Var}=6.3$.}
+AdamW ignores $\sqrt{252}$: our 100 is a daily 6.3, and a daily 100 is our 1{,}590.
+\begin{center}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+Our scan: $\lambda_{\rm Var}$ & $0$ & $10$ & $30$ & $\mathbf{100}$ & $300$ & $1000$\\
+\midrule
+Net Sharpe, 1996--1997 & $8.56$ & $8.54$ & $8.72$ & $8.42$ & $7.98$ & $6.94$\\
+Net Sharpe, 1998--2021 & $1.50$ & $1.48$ & $1.46$ & $1.31$ & $1.20$ & $0.91$\\
+Explained variance, 1998--2021 & $0.30$ & $0.35$ & $0.37$ & $0.39$ & $0.40$ & $0.40$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item Above 100, explained variance stops rising and the net Sharpe falls.
+\item A daily Sharpe (about 1{,}590 here) lost a quarter of the net Sharpe on 1996--1997.
+\end{itemize}
+\claim{We keep 100 on the annualized Sharpe; 0 to 30 does slightly better.}
+\src{Single models, seed averages: $K=30$, 5 bp, $\lambda_{\rm ridge}=10^{-4}$, 30 epochs, on dataset D (see \emph{Choosing the top 500}). The daily scale: our first data build, $K=8$ and $30$.}
 \end{frame}
 
 \begin{frame}{Tunable: Training Cost}
@@ -559,7 +813,7 @@ Net Sharpe & $0.20$ & $1.31$ & $1.72$ & $1.76$\\
 \begin{itemize}
 \item Less trading costs some gross return, but saves more in costs, up to about 7.5 bp.
 \end{itemize}
-\src{Single models, seed averages, 1998--2021: $K=30$, $\lambda_{\rm ridge}=10^{-4}$, 30 epochs, on dataset D (next part).}
+\src{Single models, seed averages, 1998--2021: $K=30$, $\lambda_{\rm ridge}=10^{-4}$, 30 epochs, on dataset D (see \emph{Choosing the top 500}).}
 \end{frame}
 
 \begin{frame}{Tunable: Epochs}
@@ -580,7 +834,7 @@ Net Sharpe & $1.48$ & $1.31$ & $0.91$\\
 \item Too many: the model fits its window ever closer and trades more, for no gain before costs.
 \item Too few: the signal is not learned. On 1996--1997, 5 and 10 epochs did clearly worse.
 \end{itemize}
-\src{Single models, seed averages, 1998--2021: $K=30$, 5 bp, $\lambda_{\rm ridge}=10^{-4}$, on dataset D (next part). 5 and 10 epochs: our pilot on the validation years.}
+\src{Single models, seed averages, 1998--2021: $K=30$, 5 bp, $\lambda_{\rm ridge}=10^{-4}$, on dataset D (see \emph{Choosing the top 500}). 5 and 10 epochs: our pilot on the validation years.}
 \end{frame}
 
 \subsection{Left open: the paper gives no value or rule}
@@ -717,327 +971,255 @@ Net Sharpe, 1998--2021 & $1.03$ & $1.13$ & $1.36$ & $1.43$ & $1.02$\\
 \end{frame}
 
 % ============================================================================
-\section{Choosing the top 500}
-\sectiontitlepage
+% Results without the band, by rule (the user's request, 2026-11-16; walk-forward is back in the deck).
+% Numbers: analysis/gap/SCAN_BUFFER_GRID.md, the "ensemble" rows of K = 8 and K = 30.
+\section{Without the band: hindsight and walk-forward}
+\sectiontitlepage[No band: we tune only the paper's own settings.\\The paper's model at its best so far.]
 
-\begin{frame}{Top 500 Stocks, or Top 500 Companies?}
-The paper takes the 500 largest \emph{stocks}. A company can then be on the list twice:
-\begin{center}
-\small
-\begin{tabular}{@{}llr@{}}
-\toprule
-Company & Two names on the list & Correlation of daily returns\\
-\midrule
-Alphabet & GOOGL, GOOG & $0.99$\\
-Comcast & CMCSA, CMCSK & $0.98$\\
-Berkshire Hathaway & Class A, class B & $0.95$\\
-\bottomrule
-\end{tabular}
-\end{center}
-\textbf{The worry: collinearity.} Two almost identical return series.
-A regression on the stocks, or the inverse of their covariance matrix,
-becomes unstable: large positions of opposite sign in the two names.
-
-\smallskip
-\textbf{The alternative:} one share class per company, as in our Phase I universe.
-
-\smallskip
-\textbf{How often:} on average 4 of the 500 names are such a second name.
-Today: Alphabet and Berkshire.
-\end{frame}
-
-\begin{frame}{Why Stocks Are Fine}
-\small
-\claim{1. The model never inverts a matrix over stocks}\par
-Its only inverse is over the $K$ factor baskets:
-$\beta^{\mathsf T}=A^{\mathsf T}(AA^{\mathsf T}+\lambda_{\rm ridge}I_K)^{-1}$, with $AA^{\mathsf T}$ of size $K\times K$.
-Twin stocks are two equal \emph{columns} of $A$, and $AA^{\mathsf T}$ stays invertible:
-\[
-A=\begin{bmatrix}0.4&0.4&0.2\\0.1&0.1&0.8\end{bmatrix}
-\quad\Rightarrow\quad
-AA^{\mathsf T}=\begin{bmatrix}0.36&0.24\\0.24&0.66\end{bmatrix},
-\qquad\det=0.18\neq0.
-\]
-
-\claim{2. The book holds twins as one bet, not against each other}\par
-In our ensemble, 1998--2021, the two classes have the same sign on $86\%$ of days.
-Together they hold $0.32\%$ of the book; two ordinary names hold $0.37\%$.
-
-\smallskip
-\claim{3. It is the paper's universe}\par
-A company rule would also drop tracking stocks, which are different businesses:
-General Motors and its Hughes class correlate at only $0.30$.
-
-\smallskip
-\claim{Collinearity can only hurt among the $K$ baskets: the job of $\lambda_{\rm ridge}$.}
-\end{frame}
-
-\begin{frame}{The List Changes Every Month}
-The paper trades the 500 largest stocks by last month's market cap.
-\begin{itemize}
-\item Each month 14 to 15 of the 500 names are new; 30 to 46 in 2000 and late 2008.
-\item Many come back: a name leaves 5,608 times in 1990--2021, and 3,343 times one returns within 12 months.
-\end{itemize}
-\textbf{Example: March 2000.} 46 of the 500 names were not on February's list.
+\begin{frame}{Three Ways to Choose a Setting}
+From here on we use one dataset: the buffered list with rebuilt history.
 
 \medskip
-LongConv needs 30 past residuals for every stock it trades:
-\[
-s_{i,t-1}=\operatorname{LongConv}_{\learn{\theta}}
-(\underbrace{\epsilon_{i,t-30},\ldots,\epsilon_{i,t-1}}_{\text{computed inside the list}}).
-\]
-\claim{A new name has no residual history inside the list. Two choices follow.}
-\end{frame}
-
-\begin{frame}{Choice 1: Wait 30 Days, or Rebuild the History?}
-\small
-\begin{center}
-\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize]
-  % time runs to the right; the name enters the list at x = 50, and 30 days later is x = 78
-  \draw[-{Stealth[length=2mm]},draw=gray] (22,0) -- (109,0);
-  \draw[draw=gray,dashed] (50,0) -- (50,22);
-  \draw[draw=gray,dashed] (78,0) -- (78,22);
-  \node[below] at (50,0) {the name enters the list};
-  \node[below] at (78,0) {30 days later};
-  % 30-day wait
-  \node[anchor=east,font=\scriptsize\bfseries] at (21,16) {30-day wait};
-  \draw[draw=gray!50,fill=gray!12] (50,13) rectangle (78,19);
-  \node at (64,16) {no signal};
-  \draw[draw=SBred,fill=SBred!10,thick] (78,13) rectangle (106,19);
-  \node[text=SBred,font=\scriptsize\bfseries] at (92,16) {signal};
-  % rebuilt history
-  \node[anchor=east,font=\scriptsize\bfseries] at (21,6) {Rebuilt history};
-  \draw[draw=AttentionBlue,fill=AttentionBlue!8,thick] (22,3) rectangle (50,9);
-  \node[text=AttentionBlue,font=\scriptsize\bfseries] at (36,6) {30 residuals, rebuilt};
-  \draw[draw=SBred,fill=SBred!10,thick] (50,3) rectangle (106,9);
-  \node[text=SBred,font=\scriptsize\bfseries] at (78,6) {signal from the first day};
-\end{tikzpicture}
-\end{center}
-
-\textbf{30-day wait:} a new name gets no LongConv signal for its first 30 days on the list.
-It is still held, but only inside the hedges of other stocks.
-
-\smallskip
-\textbf{Rebuilt history:} on day $t$, recompute every member's 30 residuals over today's list,
-also for the days before the name entered.
-
-\begin{itemize}
-\item No look-ahead: today's list was fixed at the previous month-end.
-\item 1 March 2000: 435 names have a signal under the wait; rebuilt, 494.
-\end{itemize}
-\claim{Stock-days with a signal: $96.2\%\rightarrow99.8\%$.}
-\end{frame}
-
-\begin{frame}{Choice 2: Plain List, or Buffered List?}
-\small
-\textbf{Plain list}, as in the paper: the 500 largest each month. A name near rank 500 goes in and out.
-
-\smallskip
-\textbf{Buffered list:} the 500 largest, plus last month's members that still rank within 600.
-\begin{center}
-\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize]
-  \draw[draw=SBred,fill=SBred!10,thick] (0,0) rectangle (58,6);
-  \node[text=SBred,font=\scriptsize\bfseries] at (29,3) {ranks 1--500};
-  \draw[draw=AttentionBlue,fill=AttentionBlue!8,thick] (58,0) rectangle (82,6);
-  \node[text=AttentionBlue,font=\scriptsize\bfseries] at (70,3) {501--600};
-  \draw[draw=gray!50,fill=gray!12] (82,0) rectangle (106,6);
-  \node at (94,3) {above 600};
-  \node[below] at (29,0) {every name is on the list};
-  \node[below] at (70,0) {members stay};
-  \node[below] at (94,0) {members leave};
-\end{tikzpicture}
-\end{center}
-\begin{center}
-\begin{tabular}{@{}lrr@{}}
-\toprule
-1998--2021 & Plain & Buffered\\
-\midrule
-Names on the list, per day & $499$ & $543$\\
-New names, per month & $14.9$ & $7.0$\\
-Stock-days without a signal under the 30-day wait & $3.9\%$ & $1.8\%$\\
-\bottomrule
-\end{tabular}
-\end{center}
-\claim{Half as many new names: fewer forced trades and missing histories.}
-\end{frame}
-
-\begin{frame}{Four Datasets}
-Two choices, two options each:
-\begin{center}
-\begin{tabular}{@{}cllrr@{}}
-\toprule
-Dataset & List & 30-day history & Names per day & No signal\\
-\midrule
-A & Plain & 30-day wait & $499$ & $3.9\%$\\
-B & Plain & Rebuilt & $499$ & $0.2\%$\\
-C & Buffered & 30-day wait & $543$ & $1.8\%$\\
-D & Buffered & Rebuilt & $543$ & $0.2\%$\\
-\bottomrule
-\end{tabular}
-\end{center}
-{\footnotesize No signal: share of member stock-days in 1998--2021 without a LongConv signal.\par}
-
-\medskip
-\textbf{One setting for all four:}
-\begin{itemize}
-\item $K=30$ factors, $\lambda_{\rm ridge}=10^{-4}$, 30 epochs, costs of 5 bp and 1 bp.
-\item The same 39 ranks, with no filling.
-\item Three seeds, traded as one ensemble.
-\end{itemize}
-\end{frame}
-
-\begin{frame}{Results: Net Sharpe of the Four Datasets}
-\begin{center}
-\begin{tabular}{@{}llrr@{}}
-\toprule
- & & \multicolumn{2}{c}{Net Sharpe}\\
-\cmidrule(l){3-4}
-Dataset & List, 30-day history & 1998--2021 & 2022--2025\\
-\midrule
-A & Plain, 30-day wait & $1.56$ & $-0.23$\\
-B & Plain, rebuilt & $1.62$ & $-0.15$\\
-C & Buffered, 30-day wait & $1.61$ & $-0.28$\\
-\textbf{D} & \textbf{Buffered, rebuilt} & $\mathbf{1.70}$ & $\boldsymbol{-}\mathbf{0.18}$\\
-\midrule
-Paper, $K=30$ & 500 largest & $2.28$ & --\\
-\bottomrule
-\end{tabular}
-\end{center}
-\begin{itemize}
-\item 1998--2021 is the paper's sample; 2022--2025 is our extension.
-\item Annualized, on excess returns after costs: 5 bp per traded unit, 1 bp on short exposure.
-\end{itemize}
-\src{Ours: one ensemble book from three seeds, $K=30$. Paper: Table 2, single models (its Table 3 states averages over seeds).}
-\end{frame}
-
-\begin{frame}{What the Comparison Shows}
-\begin{itemize}
-\item Each choice adds a little: less than $0.1$ in 1998--2021.
-\item D beats A by $0.13$, with a 95\% interval of $-0.06$ to $+0.34$.
-\item The validation years 1996--1997 agree: D first, A last.
-\item In 2022--2025 no dataset earns its costs.
-\item The gap to the paper remains: $1.70$ against $2.28$.
-\end{itemize}
-\claim{We will use D: the buffered list with rebuilt history.}
-\end{frame}
-
-% ============================================================================
-\section{The best fixed setting}
-\sectiontitlepage
-
-\begin{frame}{The Scan: The Best Fixed Setting for D}
-D is our dataset: buffered list, rebuilt 30-day history.
-Next we look for the best \emph{fixed} setting of four levers, for every $K=1,3,5,8,15,30,100$:
+A setting is a training cost, a $\lambda_{\rm ridge}$ and a number of epochs.
+Which setting do we trade in each year?
 \begin{center}
 \small
 \begin{tabular}{@{}lll@{}}
 \toprule
-Lever & When & Values scanned\\
+Rule & Chosen on & Knows the future?\\
 \midrule
-Training cost & In training & 2.5, 5, 7.5, 10 bp\\
-Ridge $\lambda_{\rm ridge}$ & In training & 5 values, $10^{-5}$ to $10^{-3}$\\
-Epochs & In training & 20, 30, 50, 80\\
-Band width $\delta$ & After training & 9 values, $0$ to $0.32\%$ of the book\\
+Validation (the paper's) & 1996--1997, once & No\\
+Walk-forward & Each January, on past years & No\\
+Hindsight & 1998--2021, once & \textbf{Yes}\\
 \bottomrule
 \end{tabular}
 \end{center}
 \begin{itemize}
-\item Fixed: chosen once, then kept for every year from 1998 to 2025. The models are still retrained every year.
-\item Best: the highest net Sharpe on 1996--1997, the last two years of the first training window, as in the paper.
-\item The ensemble is always on: three seeds, and we can add more.
+\item Validation and hindsight keep one setting for every year; walk-forward may switch.
+\item Hindsight is picked on the years it is scored on: an upper bound, not a strategy.
 \end{itemize}
-\claim{One setting for each $K$, chosen before the test years 1998--2025.}
+\claim{Validation and walk-forward could have been traded; hindsight could not.}
 \end{frame}
 
-\begin{frame}{What We Scanned}
-\claim{1. The validation years 1996--1997, for every $K$}\par
-32 training settings $\times$ 9 band widths: 288 fixed settings for each $K$.
-The one with the best net Sharpe of the ensemble with the band is that $K$'s setting.
-
-\medskip
-\claim{2. The test years 1998--2025, for every $K$}\par
-Each $K$ trained at its own setting: three seeds, retrained every year.
-
-\medskip
-\claim{3. The grid on 1998--2025, for $K=8$, $30$ and $100$}\par
-28 training settings $\times$ 9 band widths at $K=8$ and $30$; at $K=100$, 3~costs $\times$ 3~ridges at 30 epochs.
-To see how each lever acts: nothing is chosen from it.
-
-\medskip
-{\small The 32 training settings: 4 costs $\times$ 5 ridges at 30 epochs, plus 20, 50 and 80 epochs
-at $\lambda_{\rm ridge}=10^{-4}$ for each cost. The grid on 1998--2025 leaves out 80 epochs.\par}
-\end{frame}
-
-\begin{frame}{Results of the Scan}
+\begin{frame}{Walk-Forward: The Idea}
 \small
-Net Sharpe on D: each $K$ at its best fixed setting, chosen on 1996--1997.
+Each January, walk-forward trades the setting (and, with the band, the band width) that,
+had we trained and traded with it every year of the \emph{scoring window}, would have earned
+the highest net Sharpe. In January 2012:
 \begin{center}
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}lllrrr@{}}
+\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize,>={Stealth[length=2mm]}]
+  % One year is 6.5 mm: 1998 starts at x = 0, 2011 ends at x = 91.
+  \draw[draw=AttentionBlue,fill=AttentionBlue!8,thick] (0,12) rectangle (91,18);
+  \foreach \i in {1,...,13} \draw[AttentionBlue!35] (6.5*\i,12) -- (6.5*\i,18);
+  \node[fill=AttentionBlue!8,inner sep=1pt,text=AttentionBlue,font=\scriptsize\bfseries]
+    at (45.5,15) {scoring window, 1998--2011: each setting's net Sharpe};
+  \draw[draw=SBred,fill=SBred!10,thick] (39,2) rectangle (91,8);
+  \node[text=SBred,font=\scriptsize\bfseries] at (65,5) {training window of the 2012 models};
+  \draw[draw=SBred,fill=SBred!25,thick] (97,2) rectangle (111,18);
+  \node[align=center,text=SBred,font=\scriptsize\bfseries] at (104,10) {trade\\2012};
+  \draw[->,thick,AttentionBlue] (91.5,15) -- (96.6,15);
+  \draw[->,thick,SBred] (91.5,5) -- (96.6,5);
+  \node[below] at (3.25,2) {1998};
+  \node[below] at (42.25,2) {2004};
+  \node[below] at (87.75,2) {2011};
+  \draw[->] (68.25,22.5) -- (68.25,18.5);
+  \node[above] at (68.25,22.5) {2008: traded by the 2008 model, trained on 2000--2007};
+\end{tikzpicture}
+\end{center}
+\claim{Walk-forward uses only the past, so it could have been traded.}
+\src{1998 starts from the setting chosen on 1996--1997; a switch of setting is traded and paid for.
+Shorter scoring windows are compared later, with the band (\emph{Adding a no-trade band}).}
+\end{frame}
+
+\begin{frame}{Results without the Band}
+Seed ensemble, net Sharpe; 28 training settings at each $K$:
+\begin{center}
+\begin{tabular}{@{}llrrrr@{}}
 \toprule
- & \multicolumn{2}{c}{Fixed setting} & Paper & \multicolumn{2}{c}{Ours}\\
-\cmidrule(lr){2-3}\cmidrule(l){5-6}
- & Cost, $\lambda_{\rm ridge}$, epochs & Band & 1998--2021 & 1998--2021 & 2022--2025\\
+ & & Paper & Validation & Walk-forward & Hindsight\\
 \midrule
-$K=1$ & 10 bp, $10^{-4}$, 80 & $0.12\%$ & $1.68$ & $1.66$ & $-0.23$\\
-$K=3$ & 7.5 bp, $10^{-4}$, 80 & $0.12\%$ & $1.69$ & $1.54$ & $-0.10$\\
-$K=5$ & 5 bp, $10^{-4}$, 80 & $0.08\%$ & $1.58$ & $1.46$ & $-0.97$\\
-$K=8$ & 5 bp, $10^{-4}$, 80 & $0.04\%$ & $1.94$ & $1.29$ & $-1.17$\\
-$K=15$ & 2.5 bp, $10^{-4}$, 50 & $0.08\%$ & $2.25$ & $1.42$ & $-1.45$\\
-$K=30$ & 5 bp, $3\cdot10^{-4}$, 30 & $0.04\%$ & $2.28$ & $2.09$ & $-0.18$\\
-$K=100$ & 7.5 bp, $3\cdot10^{-4}$, 30 & $0.02\%$ & $2.19$ & $2.08$ & $+0.25$\\
+$K=8$ & 1998--2021 & $1.94$ & $1.58$ & $1.74$ & $1.99$\\
+ & 2022--2025 & -- & $-0.84$ & $-0.32$ & $-0.31$\\
+\midrule
+$K=30$ & 1998--2021 & $2.28$ & $2.03$ & $1.81$ & $2.07$\\
+ & 2022--2025 & -- & $-0.14$ & $-0.07$ & $-0.07$\\
 \bottomrule
 \end{tabular}
 \end{center}
 \begin{itemize}
-\item $K=1$ and $3$: near the paper's net Sharpe, at 1.5 to 2 times its volatility.
-\item $K=5$ to $15$: the chosen settings train long and trade too much.
+\item Walk-forward does better than validation at $K=8$ and worse at $K=30$.
+\item Hindsight picks training at 10 bp: it trades 0.29 to 0.32 of the book a day.
+\item No rule earns its costs in 2022--2025.
 \end{itemize}
-\claim{$K=30$ and $K=100$ come within $0.2$ of the paper.}
-\src{Ours: one ensemble book from three seeds, through the band. Paper: Table 2, single models.}
+\claim{Without the band, even hindsight falls short of the paper at $K=30$.}
+\src{Validation: the best on 1996--1997. Walk-forward: each year the best since 1998 (16 switches in 1998--2025 at $K=8$, 9 at $K=30$). Hindsight: the best on 1998--2021. Paper: Table 2, single models.}
 \end{frame}
 
-\begin{frame}{What the Whole Grid Shows}
-\small
-Ensemble with the band; at $K=100$ the grid is 3~costs $\times$ 3~ridges:
-\begin{center}
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}lrrrrr@{}}
-\toprule
- & Paper & \multicolumn{2}{c}{Chosen on 1996--1997} & \multicolumn{2}{c}{Chosen on 1998--2021}\\
-\cmidrule(lr){3-4}\cmidrule(l){5-6}
-Net Sharpe & 1998--2021 & 1998--2021 & 2022--2025 & 1998--2021 & 2022--2025\\
-\midrule
-$K=8$ & $1.94$ & $1.29$ & $-1.17$ & $2.22$ & $-0.40$\\
-$K=30$ & $2.28$ & $2.09$ & $-0.18$ & $2.28$ & $+0.13$\\
-$K=100$ & $2.19$ & $2.08$ & $+0.25$ & $2.26$ & $+0.35$\\
-\bottomrule
-\end{tabular}
-\end{center}
-Chosen on 1998--2021, all at 30 epochs: 5 bp, $\lambda_{\rm ridge}=10^{-4}$, band $0.12\%$ at $K=8$ and $30$;
-10 bp, $3\cdot10^{-4}$, band $0.04\%$ at $K=100$.
-An upper bound: scored on the years it is chosen on. 2022--2025 is out of sample for both.
+% ============================================================================
+% Extensions (the user's request, 2026-11-16): the band added after training, with the scan,
+% and the band inside the training objective (analysis/gap/BAND_TRAINED*.md).
+\section{Extensions of the paper's model}
+\sectiontitlepage
 
-At $K=8$, 1996--1997 rewards long training; 1998--2021 does not:
+\subsection{Adding a no-trade band}
+
+% The band as a fourth lever on the 28 training settings of the part without the band (stage 2 of the scan on D):
+% analysis/gap/SCAN_BUFFER_GRID.md, the "ensemble" and "ensemble + band" rows of K = 8 and K = 30.
+\begin{frame}{Adding the Band: One More Lever}
+The paper has no band. We add it after training (see \emph{Training and its settings}): the same models, traded more slowly.
+Its width $\delta$ becomes a fourth lever, chosen together with the three training levers:
 \begin{center}
-\begin{tabular}{@{}lrrrr@{}}
+\begin{tabular}{@{}ll@{}}
 \toprule
-Epochs, at 5 bp and $\lambda_{\rm ridge}=10^{-4}$ & 20 & 30 & 50 & 80\\
+Lever & Values\\
 \midrule
-Net Sharpe, 1996--1997 & $8.20$ & $9.15$ & $9.88$ & $\mathbf{10.10}$\\
-Net Sharpe, 1998--2021 & $2.02$ & $\mathbf{2.12}$ & $1.88$ & $1.29$\\
+Training cost & 2.5, 5, 7.5, 10 bp\\
+$\lambda_{\rm ridge}$ & 5 values, $10^{-5}$ to $10^{-3}$\\
+Epochs & 20, 30, 50\\
+\midrule
+\textbf{Band width} $\boldsymbol{\delta}$ & \textbf{9 values, 0 to 0.32\% of the book}\\
 \bottomrule
 \end{tabular}
 \end{center}
-\claim{The grid reaches the paper; choosing on 1996--1997 misses it at $K=8$.}
-\src{The band is chosen with the rest of the setting: on 1996--1997, or on 1998--2021 in the last two columns.}
+28 training settings $\times$ 9 band widths: 252 choices at each $K$, picked by the same three rules
+as without the band: validation, walk-forward and hindsight.
+\claim{One more lever, the same three rules.}
+\end{frame}
+
+\begin{frame}{The Band Raises Every Rule}
+Net Sharpe of the seed ensemble, 1998--2021: without the band ($\circ$) and with it ($\bullet$).
+\begin{center}
+\begin{tikzpicture}
+\pgfplotsset{bandrule/.style={
+    width=44mm, height=33mm, scale only axis,
+    xmin=0.45, xmax=3.55, ymin=1.45, ymax=2.42,
+    xtick={1,2,3}, xticklabels={Validation,{Walk-\\forward},Hindsight}, xticklabel style={align=center},
+    ytick={1.6,1.8,2.0,2.2,2.4},
+    yticklabel style={/pgf/number format/fixed,/pgf/number format/precision=1,/pgf/number format/fixed zerofill},
+    tick label style={font=\scriptsize}, title style={font=\small\bfseries},
+    axis lines*=left, ymajorgrids, grid style={draw=Ink!12},
+    major tick length=1.5pt, clip=false}}
+\begin{axis}[bandrule, title={$K=8$}, ylabel={Net Sharpe, 1998--2021}, ylabel style={font=\scriptsize}]
+  \draw[densely dashed,SBred,thick] (axis cs:0.45,1.94) -- (axis cs:3.55,1.94);
+  \node[font=\scriptsize,anchor=south west,inner sep=1pt] at (axis cs:0.45,1.94) {Paper $1.94$};
+  \draw[-{Stealth[length=1.6mm]},thick,AttentionBlue,shorten <=2.2pt,shorten >=2.6pt] (axis cs:1,1.58) -- (axis cs:1,1.88);
+  \node[font=\scriptsize,below=2.5pt,inner sep=1pt,fill=white] at (axis cs:1,1.58) {$1.58$};
+  \node[font=\scriptsize,anchor=west,inner sep=1pt,fill=white] at (axis cs:1.07,1.88) {$1.88$};
+  \draw[-{Stealth[length=1.6mm]},thick,AttentionBlue,shorten <=2.2pt,shorten >=2.6pt] (axis cs:2,1.74) -- (axis cs:2,1.99);
+  \node[font=\scriptsize,below=2.5pt,inner sep=1pt,fill=white] at (axis cs:2,1.74) {$1.74$};
+  \node[font=\scriptsize,anchor=west,inner sep=1pt,fill=white] at (axis cs:2.07,1.99) {$1.99$};
+  \draw[-{Stealth[length=1.6mm]},thick,AttentionBlue,shorten <=2.2pt,shorten >=2.6pt] (axis cs:3,1.99) -- (axis cs:3,2.22);
+  \node[font=\scriptsize,below=2.5pt,inner sep=1pt,fill=white] at (axis cs:3,1.99) {$1.99$};
+  \node[font=\scriptsize,anchor=west,inner sep=1pt,fill=white] at (axis cs:3.07,2.22) {$2.22$};
+  \addplot[only marks,mark=o,mark size=2pt,thick,AttentionBlue] coordinates {(1,1.58) (2,1.74) (3,1.99)};
+  \addplot[only marks,mark=*,mark size=2pt,AttentionBlue] coordinates {(1,1.88) (2,1.99) (3,2.22)};
+\end{axis}
+\begin{axis}[bandrule, xshift=56mm, title={$K=30$}, yticklabels={}]
+  \draw[densely dashed,SBred,thick] (axis cs:0.45,2.28) -- (axis cs:3.55,2.28);
+  \node[font=\scriptsize,anchor=south west,inner sep=1pt] at (axis cs:0.45,2.28) {Paper $2.28$};
+  \draw[-{Stealth[length=1.6mm]},thick,AttentionBlue,shorten <=2.2pt,shorten >=2.6pt] (axis cs:1,2.03) -- (axis cs:1,2.09);
+  \node[font=\scriptsize,below=2.5pt,inner sep=1pt,fill=white] at (axis cs:1,2.03) {$2.03$};
+  \node[font=\scriptsize,anchor=west,inner sep=1pt,fill=white] at (axis cs:1.07,2.09) {$2.09$};
+  \draw[-{Stealth[length=1.6mm]},thick,AttentionBlue,shorten <=2.2pt,shorten >=2.6pt] (axis cs:2,1.81) -- (axis cs:2,1.93);
+  \node[font=\scriptsize,below=2.5pt,inner sep=1pt,fill=white] at (axis cs:2,1.81) {$1.81$};
+  \node[font=\scriptsize,anchor=west,inner sep=1pt,fill=white] at (axis cs:2.07,1.93) {$1.93$};
+  \draw[-{Stealth[length=1.6mm]},thick,AttentionBlue,shorten <=2.2pt,shorten >=2.6pt] (axis cs:3,2.07) -- (axis cs:3,2.28);
+  \node[font=\scriptsize,below=2.5pt,inner sep=1pt,fill=white] at (axis cs:3,2.07) {$2.07$};
+  \node[font=\scriptsize,anchor=west,inner sep=1pt,fill=white] at (axis cs:3.07,2.28) {$2.28$};
+  \addplot[only marks,mark=o,mark size=2pt,thick,AttentionBlue] coordinates {(1,2.03) (2,1.81) (3,2.07)};
+  \addplot[only marks,mark=*,mark size=2pt,AttentionBlue] coordinates {(1,2.09) (2,1.93) (3,2.28)};
+\end{axis}
+\end{tikzpicture}
+\end{center}
+\claim{At $K=8$ walk-forward passes the paper; at $K=30$ only hindsight reaches it.}
+\src{2022--2025: at $K=30$ the band lifts walk-forward and hindsight from $-0.07$ to $+0.13$; at $K=8$ every rule still loses.
+Paper: Table 2.}
+\end{frame}
+
+% Scoring windows for walk-forward: analysis/gap/LOOKBACK.md. "Since 1998" and "last 8 years" were fixed before they ran;
+% "last 4 years" was added on 2026-11-16 at the user's request, outside that decision. The slide shows only these three
+% (the user's request, 2026-11-16); fading memory and recent return over full risk stay in LOOKBACK.md.
+\begin{frame}{Walk-Forward: Which Scoring Window?}
+Walk-forward scores each choice on every year since 1998. Would a shorter memory choose better?
+\begin{center}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Scoring window, net Sharpe 1998--2021 & $K=8$ & $K=30$\\
+\midrule
+Since 1998 & $\mathbf{1.99}$ & $\mathbf{1.93}$\\
+Last 8 years & $1.74$ & $1.78$\\
+Last 4 years & $1.84$ & $1.74$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item Both shorter windows do worse at both $K$, by $0.15$ to $0.25$.
+\item They switch more and chase market exposure: more volatility, no more return.
+\end{itemize}
+\claim{Long records choose better than short ones.}
+\src{With the band: 252 choices at each $K$. Last 8 or 4 years: each January, the net Sharpe over the 8 or 4 years before
+(every year since 1998 while there are fewer). 2022--2025: every window within $0.15$ of ``since 1998''.}
+\end{frame}
+
+\subsection{The no-trade rule in the loss}
+
+% The band trained inside the model: analysis/gap/BAND_TRAINED.md (delta = 0.04%) and BAND_TRAINED_0.0012.md
+% (0.12%); seed ensembles, both bands resizing only the stocks that trade.
+\begin{frame}{Putting the Band Inside Training}
+So far the network is trained on its target $\omega_t$; the band comes only when we trade.
+Now the band is inside training: the objective is the net Sharpe of the book $h_t$.
+\begin{center}
+\begin{tikzpicture}[x=1mm,y=1mm,>={Stealth[length=2mm]}]
+  \node[anchor=west,font=\scriptsize\bfseries] at (0,16) {Band added after};
+  \node[flowbox=AttentionBlue] (n1) at (8,8) {network};
+  \node[flowbox=AttentionBlue] (o1) at (90,8) {objective: net\\Sharpe of $\omega_t$};
+  \draw[->,thick,AttentionBlue] (n1) -- node[above,font=\scriptsize,text=Ink] {target $\omega_t$} (o1);
+  \node[anchor=west,font=\scriptsize\bfseries] at (0,-6) {Band in the loss};
+  \node[flowbox=SBred] (n2) at (8,-14) {network};
+  \node[flowbox=SBred] (b2) at (49,-14) {band $\delta$};
+  \node[flowbox=SBred] (o2) at (90,-14) {objective: net\\Sharpe of $h_t$};
+  \draw[->,thick,SBred] (n2) -- node[above,font=\scriptsize,text=Ink] {target $\omega_t$} (b2);
+  \draw[->,thick,SBred] (b2) -- node[above,font=\scriptsize,text=Ink] {book $h_t$} (o2);
+\end{tikzpicture}
+\end{center}
+Training now includes ``leave the wheel when it is almost right''.
+\claim{The hope: a network that knows the band aims better.}
+\src{$K=30$, 5 bp, $\lambda_{\rm ridge}=10^{-4}$, 30 epochs, three seeds. Two widths: $\delta=0.04\%$, chosen on 1996--1997, and $0.12\%$, hindsight's width.}
+\end{frame}
+
+\begin{frame}{The Band in the Loss Does Not Pay}
+Seed ensemble with the band, added after training or in the loss:
+\begin{center}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+ & & \multicolumn{3}{c}{1998--2021} & 2022--2025\\
+\cmidrule(lr){3-5}\cmidrule(l){6-6}
+$\delta$ & Band & Gross Sharpe & Turnover & Net Sharpe & Net Sharpe\\
+\midrule
+$0.04\%$ & Added after & $3.83$ & $0.47$ & $2.10$ & $+0.10$\\
+ & In the loss & $4.17$ & $0.51$ & $2.17$ & $-0.13$\\
+\midrule
+$0.12\%$ & Added after & $3.56$ & $0.30$ & $2.33$ & $+0.18$\\
+ & In the loss & $4.38$ & $0.42$ & $2.40$ & $-0.46$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item In the loss the network aims sharper but trades more: the net Sharpe ties in 1998--2021.
+\item 2022--2025 is clearly worse; 1996--1997 favours it ($+0.76$ at $0.12\%$).
+\end{itemize}
+\claim{The validation years reward trading that later years punish.}
+\src{In the loss minus added after: $+0.06$ and $+0.07$ in 1998--2021, inside the noise; $-0.23$ and $-0.64$ in 2022--2025, beyond it.
+Turnover per day. $\delta=0.12\%$ was read off 1998--2021, so its rows are a diagnostic.}
 \end{frame}
 
 % ============================================================================
 \section{Conclusions and next steps}
 \sectiontitlepage
 
-\begin{frame}{Conclusions and Next Steps}
+\begin{frame}{Conclusions}
 \small
 \textbf{What we built:}
 \begin{itemize}
@@ -1048,12 +1230,15 @@ Net Sharpe, 1998--2021 & $2.02$ & $\mathbf{2.12}$ & $1.88$ & $1.29$\\
 \textbf{What we get so far}, net Sharpe in 1998--2021 (2022--2025):
 \begin{itemize}
 \item D, $K=30$, seed ensemble: $1.70$ ($-0.18$); the paper: $2.28$.
-\item Best fixed setting, with the band: $2.09$ ($-0.18$) at $K=30$, $2.08$ ($+0.25$) at $K=100$.
+\item With the band, $K=30$: $2.09$ ($-0.18$) chosen on 1996--1997, $1.93$ ($+0.13$) by walk-forward.
+\item Walk-forward: better at $K=8$, worse at $K=30$. The band in the loss: no gain.
 \end{itemize}
-\textbf{Next:}
+\end{frame}
+
+\begin{frame}{Next Steps}
 \begin{itemize}
 \item $K=5$ to $15$: a fixed setting that holds beyond 1996--1997.
-\item Explore the role of $\lambda_{\rm Var}$: annualizing set it, in effect, to $6.3$.
+\item $\lambda_{\rm Var}$ of 0 to 30 gains 0.15 to 0.20 at $K=30$: test the other $K$.
 \item More seeds in the ensemble.
 \item Where the remaining gap to the paper comes from.
 \end{itemize}
@@ -1360,6 +1545,36 @@ D, ensemble & $3.89$ & $15.90$ & $4.08$ & $1.70$ & $6.89$ & $0.62$\\
 \item After costs we fall short: we trade $0.62$ of the book a day.
 \end{itemize}
 \src{$\mu$ and $\sigma$ in percent a year; turnover per day. $^{*}$The paper does not report turnover: $0.47$ is implied by its costs if half of the book is short.}
+\end{frame}
+
+% Each K at its own choice on 1996-1997 (stage 3 of the scan on D): analysis/gap/SCAN_BUFFER.md;
+% the K = 8 epochs: analysis/gap/PILOT_BUFFER.md and SCAN_BUFFER_GRID.md.
+\begin{frame}{Every $K$ with the Band, Chosen on 1996--1997}
+\small
+Each $K$ at its own best choice on 1996--1997, among 32 training settings (up to 80 epochs) $\times$ 9 band widths:
+\begin{center}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lllrrr@{}}
+\toprule
+ & \multicolumn{2}{c}{Fixed setting} & Paper & \multicolumn{2}{c}{Ours}\\
+\cmidrule(lr){2-3}\cmidrule(l){5-6}
+ & Cost, $\lambda_{\rm ridge}$, epochs & Band & 1998--2021 & 1998--2021 & 2022--2025\\
+\midrule
+$K=1$ & 10 bp, $10^{-4}$, 80 & $0.12\%$ & $1.68$ & $1.66$ & $-0.23$\\
+$K=3$ & 7.5 bp, $10^{-4}$, 80 & $0.12\%$ & $1.69$ & $1.54$ & $-0.10$\\
+$K=5$ & 5 bp, $10^{-4}$, 80 & $0.08\%$ & $1.58$ & $1.46$ & $-0.97$\\
+$K=8$ & 5 bp, $10^{-4}$, 80 & $0.04\%$ & $1.94$ & $1.29$ & $-1.17$\\
+$K=15$ & 2.5 bp, $10^{-4}$, 50 & $0.08\%$ & $2.25$ & $1.42$ & $-1.45$\\
+$K=30$ & 5 bp, $3\cdot10^{-4}$, 30 & $0.04\%$ & $2.28$ & $2.09$ & $-0.18$\\
+$K=100$ & 7.5 bp, $3\cdot10^{-4}$, 30 & $0.02\%$ & $2.19$ & $2.08$ & $+0.25$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item $K=1$ and $3$: near the paper's net Sharpe, at 1.5 to 2 times its volatility.
+\item $K=5$ to $15$: 1996--1997 picks long training, which overfits ($K=8$: 80 epochs, $10.10$ on 1996--1997, $1.29$ on 1998--2021).
+\end{itemize}
+\src{Ours: one ensemble book from three seeds, through the band. Paper: Table 2. The main slides choose among 28 training settings (up to 50 epochs): $1.88$ at $K=8$.}
 \end{frame}
 
 \end{document}

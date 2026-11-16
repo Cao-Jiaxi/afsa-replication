@@ -155,7 +155,15 @@ def evaluate(cfg: Config, panel: Panel | BlockPanel, model: AFSAModel, tasks: li
             }
             if keep_weights:                                                 # the target; with the trading layer also the book
                 res["weights"] = out["w"][j, 1: n + 1, :u].float().cpu().numpy()
-                if cfg.band > 0 or cfg.band_eta < 1:
+                if cfg.band > 0 or cfg.band_eta < 1 or cfg.trade_head:
                     res["book"] = w[1:].astype(np.float32)
+                if cfg.trade_head:                                           # and the learned rule's band width and speed
+                    res["delta"] = out["delta"][j, 1: n + 1, :u].float().cpu().numpy()
+                    res["eta"] = out["eta"][j, 1: n + 1, :u].float().cpu().numpy()
+                if cfg.trade_state:                                          # and what a book carried across years needs:
+                    res["dial_a"] = out["dial_a"][j, 1: n + 1, :u].float().cpu().numpy()   # the logits before the view
+                    res["dial_k"] = out["dial_k"][j, 1: n + 1, :u].float().cpu().numpy()   # of the book,
+                    res["signal"] = out["has"][j, 1: n + 1, :u].cpu().numpy()             # who has a signal,
+                    res["dial_v"] = torch.stack([sub.delta_v[j], sub.eta_v[j]]).float().cpu().numpy()   # the weights on the view [2, 3]
             results.append(res)
     return results
