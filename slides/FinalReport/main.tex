@@ -308,7 +308,7 @@ The paper reads it as ``a strong performance throughout the full sample''.
 \includegraphics[width=\linewidth]{assets/fig2_K030.png}
 \claim{After costs, the paper's curve is about flat from 2010, close to ours.}
 \src{Paper: Figure 2 and Table 2, $K=30$; after costs, our estimate (next slide). Ours: $K=30$, seed ensemble with the no-trade band,
-on the dataset we use (see \emph{Choosing the top 500}); hindsight knows the future, walk-forward only the past
+on the dataset we use (see \emph{Choosing the top 500}), at the best fixed setting over 1998--2021: hindsight, which knows the future
 (see \emph{Without the band: hindsight and walk-forward}). Paper: 245 days a year; ours: every trading day.}
 \end{frame}
 
@@ -379,7 +379,7 @@ at the previous month-end.
 \smallskip
 \claim{2. Returns}\par
 Daily returns minus the risk-free rate. Delisting returns are included.
-No filling is for the characteristics. A held stock needs a return every day:
+Our no-filling rule is for the characteristics. A held stock needs a return every day:
 the 87 missing ones (trading halts, of 4.5 million stock-days) count as $0$, and the stock stays.
 
 \smallskip
@@ -567,7 +567,7 @@ and together hold $0.32\%$ of the book; two ordinary names hold $0.37\%$.
 The paper trades the 500 largest stocks by last month's market cap.
 \begin{itemize}
 \item Each month 14 to 15 of the 500 names are new; 30 to 46 in 2000 and late 2008.
-\item Many come back: a name leaves 5,608 times in 1990--2021, and 3,343 times one returns within 12 months.
+\item Many come back: of 5,608 exits in 1990--2021, 3,343 return within 12 months.
 \end{itemize}
 \textbf{Example: March 2000.} 46 of the 500 names were not on February's list.
 
@@ -697,8 +697,9 @@ Net Sharpe & $1.62$ & $\mathbf{1.70}$\\
 \end{center}
 \begin{itemize}
 \item Rebuilt history adds a little on both lists: $+0.06$ and $+0.09$.
-\item The differences are inside the noise, but 1996--1997 agree: D first, A last.
-\item The gap to the paper remains: $1.70$ against $2.28$.
+\item The differences are inside the noise, but the validation years 1996--1997 agree: D first, A last.
+\item The gap to the paper is in costs: before costs D is close ($3.89$ against $3.97$),
+      but it pays $9.0\%$ a year against $7.1\%$.
 \end{itemize}
 \claim{We will use D: the buffered list with rebuilt history.}
 \end{frame}
@@ -721,6 +722,11 @@ Net Sharpe & $1.62$ & $\mathbf{1.70}$\\
 \quad\ldots,\quad
 \underbrace{2017\text{--}2024}_{\text{train}}\rightarrow\underbrace{2025}_{\text{test}}.
 \]}%
+\textbf{Three periods:}
+\begin{itemize}
+\item 1998--2021, the paper's sample, and 2022--2025, our extension.
+\item 1996--1997, the validation years (6-year windows): the paper's rule chooses settings there.
+\end{itemize}
 \textbf{Inside one window:}
 \begin{itemize}
 \item An epoch is 16 batches of 126 consecutive days: 8 years.
@@ -733,7 +739,8 @@ Net Sharpe & $1.62$ & $\mathbf{1.70}$\\
 \vfill
 \claim{The paper leaves much to tune: at its settings, our $K=30$ model nets a Sharpe ratio of $1.31$ on 1998--2021, against the paper's $2.28$.}
 \vfill
-\src{Single model, seed average, dataset D (see \emph{Choosing the top 500}): 5 bp, 30 epochs, $\lambda_{\rm ridge}=10^{-4}$.}
+\src{Single model, seed average, as in the paper's Table 2; as one seed ensemble, $1.70$.
+Dataset D (see \emph{Choosing the top 500}): 5 bp, 30 epochs, $\lambda_{\rm ridge}=10^{-4}$.}
 \end{frame}
 
 \begin{frame}{What We Tune, What the Paper Leaves Open}
@@ -742,18 +749,18 @@ Net Sharpe & $1.62$ & $\mathbf{1.70}$\\
 \setlength{\tabcolsep}{5pt}
 \begin{tabular}{@{}lll@{}}
 \toprule
- & The paper & Our choice\\
+ & The paper & Ours\\
 \midrule
 \multicolumn{3}{@{}l}{\textbf{Tunable:} the paper gives a value}\\
-Sharpe scale & $\lambda_{\rm Var}=100$ & Annualized: $\lambda_{\rm Var}\approx6.3$ in effect\\
+$\lambda_{\rm Var}$ & 100 & Annualized Sharpe; 0 to 1000\\
 Training trading cost & 5 bp & 2.5, 5, 7.5, 10 bp\\
-Epochs & 30 & 20, 30, 50, 80\\
+Epochs & 30 & 20, 30, 50\\
 \midrule
 \multicolumn{3}{@{}l}{\textbf{Left open:} the paper gives no value or rule}\\
 Ridge $\lambda_{\rm ridge}$ & -- & 5 values, $10^{-5}$ to $10^{-3}$\\
-Averaging over seeds & ``Averaged'' & One ensemble book\\
-No-trade band width $\delta$ & -- & 9 values, $0$ to $0.32\%$\\
 Batch size (days) & -- & 35, 49, 126, 252\\
+Averaging over seeds & ``Averaged'' & One ensemble book\\
+No-trade band width $\delta$ & No band & 9 values, $0$ to $0.32\%$\\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -871,6 +878,30 @@ Share of the factor removed from each residual & $99.5\%$ & $95.2\%$ & $66.7\%$\
 \end{itemize}
 \end{frame}
 
+\begin{frame}{Left Open: Batch Size}
+An epoch covers the 8-year window with batches of consecutive days.
+Shorter batches mean more optimizer steps.
+\begin{center}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Batch (days) & 35 & 49 & 126 & 252 & 252\\
+Epochs & 30 & 30 & 30 & 30 & 60\\
+Steps per window & 1{,}740 & 1{,}230 & 480 & 240 & 480\\
+\midrule
+Turnover per day & $0.72$ & $0.71$ & $0.66$ & $0.60$ & $0.76$\\
+Net Sharpe, 1996--1997 & $6.58$ & $6.86$ & $7.19$ & $6.76$ & $7.12$\\
+Net Sharpe, 1998--2021 & $1.03$ & $1.13$ & $1.36$ & $1.43$ & $1.02$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item More steps, or longer batches at the same steps, fit the window closer: the model trades more.
+\item 126 days, our choice, does best on the validation years 1996--1997.
+\end{itemize}
+\claim{Batch size acts through how closely the model fits its window.}
+\src{Our first runs, on the first data build: $K=8$, plain list, 30-day wait, $\lambda_{\rm ridge}=10^{-5}$, 5 bp; single models, seed averages.}
+\end{frame}
+
 \begin{frame}{Left Open: Averaging over Seeds}
 Three seeds give three models, and three sets of stock weights.
 \claim{Our reading: average the weights every day, then trade one book.}
@@ -892,7 +923,7 @@ Trade & $+0.3\%$ & $-0.3\%$ & $+0.3\%$ & $+0.1\%$\\
 \begin{itemize}
 \item Opposite trades cancel inside the book, so it pays less cost.
 \item In our runs two seeds' daily returns correlate at 0.81--0.88, their trades only at 0.60.
-\item All results today are for this ensemble.
+\item The dataset comparison used this ensemble, and every result from here on does.
 \end{itemize}
 \end{frame}
 
@@ -920,7 +951,7 @@ cannot feel where the wheel is now, and is fined each time the wheel moves.
 
 \begin{frame}{Left Open: The No-Trade Band}
 \small
-The model sets a target $\omega_{j,t}$. The band also sees the weight held, $h_{j,t-1}$.
+The paper trades to the model's target $\omega_{j,t}$ every day. A band also sees the weight held, $h_{j,t-1}$.
 
 \claim{Move a position only by the part of its gap that exceeds $\delta$.}
 \[
@@ -944,30 +975,6 @@ $0.20\%$ & $0.10\%$ & $0.06\%$ & $0.26\%$\\
 \item No retraining: the same models, traded more slowly.
 \item At $\delta=0.04\%$, our $K=30$ ensemble trades $0.47$ a day instead of $0.62$.
 \end{itemize}
-\end{frame}
-
-\begin{frame}{Left Open: Batch Size}
-An epoch covers the 8-year window with batches of consecutive days.
-Shorter batches mean more optimizer steps.
-\begin{center}
-\begin{tabular}{@{}lrrrrr@{}}
-\toprule
-Batch (days) & 35 & 49 & 126 & 252 & 252\\
-Epochs & 30 & 30 & 30 & 30 & 60\\
-Steps per window & 1{,}740 & 1{,}230 & 480 & 240 & 480\\
-\midrule
-Turnover per day & $0.72$ & $0.71$ & $0.66$ & $0.60$ & $0.76$\\
-Net Sharpe, 1996--1997 & $6.58$ & $6.86$ & $7.19$ & $6.76$ & $7.12$\\
-Net Sharpe, 1998--2021 & $1.03$ & $1.13$ & $1.36$ & $1.43$ & $1.02$\\
-\bottomrule
-\end{tabular}
-\end{center}
-\begin{itemize}
-\item More steps, or longer batches at the same steps, fit the window closer: the model trades more.
-\item 126 days, our choice, does best on the validation years 1996--1997.
-\end{itemize}
-\claim{Batch size acts through how closely the model fits its window.}
-\src{Our first runs, on the first data build: $K=8$, plain list, 30-day wait, $\lambda_{\rm ridge}=10^{-5}$, 5 bp; single models, seed averages.}
 \end{frame}
 
 % ============================================================================
@@ -1075,7 +1082,7 @@ Lever & Values\\
 \midrule
 Training cost & 2.5, 5, 7.5, 10 bp\\
 $\lambda_{\rm ridge}$ & 5 values, $10^{-5}$ to $10^{-3}$\\
-Epochs & 20, 30, 50\\
+Epochs & 30; also 20 and 50 at $\lambda_{\rm ridge}=10^{-4}$\\
 \midrule
 \textbf{Band width} $\boldsymbol{\delta}$ & \textbf{9 values, 0 to 0.32\% of the book}\\
 \bottomrule
@@ -1086,12 +1093,12 @@ as without the band: validation, walk-forward and hindsight.
 \claim{One more lever, the same three rules.}
 \end{frame}
 
-\begin{frame}{The Band Raises Every Rule}
-Net Sharpe of the seed ensemble, 1998--2021: without the band ($\circ$) and with it ($\bullet$).
+\begin{frame}{The Band Raises Every Rule in 1998--2021}
+\leavevmode{\small Without the band ($\circ$), with it ($\bullet$); dashed: the paper ($1.94$, $2.28$).\par}
 \begin{center}
 \begin{tikzpicture}
 \pgfplotsset{bandrule/.style={
-    width=44mm, height=33mm, scale only axis,
+    width=44mm, height=23mm, scale only axis,
     xmin=0.45, xmax=3.55, ymin=1.45, ymax=2.42,
     xtick={1,2,3}, xticklabels={Validation,{Walk-\\forward},Hindsight}, xticklabel style={align=center},
     ytick={1.6,1.8,2.0,2.2,2.4},
@@ -1101,7 +1108,6 @@ Net Sharpe of the seed ensemble, 1998--2021: without the band ($\circ$) and with
     major tick length=1.5pt, clip=false}}
 \begin{axis}[bandrule, title={$K=8$}, ylabel={Net Sharpe, 1998--2021}, ylabel style={font=\scriptsize}]
   \draw[densely dashed,SBred,thick] (axis cs:0.45,1.94) -- (axis cs:3.55,1.94);
-  \node[font=\scriptsize,anchor=south west,inner sep=1pt] at (axis cs:0.45,1.94) {Paper $1.94$};
   \draw[-{Stealth[length=1.6mm]},thick,AttentionBlue,shorten <=2.2pt,shorten >=2.6pt] (axis cs:1,1.58) -- (axis cs:1,1.88);
   \node[font=\scriptsize,below=2.5pt,inner sep=1pt,fill=white] at (axis cs:1,1.58) {$1.58$};
   \node[font=\scriptsize,anchor=west,inner sep=1pt,fill=white] at (axis cs:1.07,1.88) {$1.88$};
@@ -1116,7 +1122,6 @@ Net Sharpe of the seed ensemble, 1998--2021: without the band ($\circ$) and with
 \end{axis}
 \begin{axis}[bandrule, xshift=56mm, title={$K=30$}, yticklabels={}]
   \draw[densely dashed,SBred,thick] (axis cs:0.45,2.28) -- (axis cs:3.55,2.28);
-  \node[font=\scriptsize,anchor=south west,inner sep=1pt] at (axis cs:0.45,2.28) {Paper $2.28$};
   \draw[-{Stealth[length=1.6mm]},thick,AttentionBlue,shorten <=2.2pt,shorten >=2.6pt] (axis cs:1,2.03) -- (axis cs:1,2.09);
   \node[font=\scriptsize,below=2.5pt,inner sep=1pt,fill=white] at (axis cs:1,2.03) {$2.03$};
   \node[font=\scriptsize,anchor=west,inner sep=1pt,fill=white] at (axis cs:1.07,2.09) {$2.09$};
@@ -1131,9 +1136,20 @@ Net Sharpe of the seed ensemble, 1998--2021: without the band ($\circ$) and with
 \end{axis}
 \end{tikzpicture}
 \end{center}
+\vspace{-2mm}
+{\footnotesize
+\begin{center}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+2022--2025 & Validation & Walk-forward & Hindsight\\
+\midrule
+$K=8$ & $-0.84\rightarrow-0.57$ & $-0.32\rightarrow-0.40$ & $-0.31\rightarrow-0.40$\\
+$K=30$ & $-0.14\rightarrow-0.18$ & $-0.07\rightarrow+0.13$ & $-0.07\rightarrow+0.13$\\
+\bottomrule
+\end{tabular}
+\end{center}}
 \claim{At $K=8$ walk-forward passes the paper; at $K=30$ only hindsight reaches it.}
-\src{2022--2025: at $K=30$ the band lifts walk-forward and hindsight from $-0.07$ to $+0.13$; at $K=8$ every rule still loses.
-Paper: Table 2.}
+\src{Seed ensemble. 2022--2025: at $K=8$ every rule still loses; at $K=30$ the band lifts walk-forward and hindsight to $+0.13$. Paper: Table 2.}
 \end{frame}
 
 % Scoring windows for walk-forward: analysis/gap/LOOKBACK.md. "Since 1998" and "last 8 years" were fixed before they ran;
@@ -1142,23 +1158,26 @@ Paper: Table 2.}
 \begin{frame}{Walk-Forward: Which Scoring Window?}
 Walk-forward scores each choice on every year since 1998. Would a shorter memory choose better?
 \begin{center}
-\begin{tabular}{@{}lrr@{}}
+\begin{tabular}{@{}lrrrr@{}}
 \toprule
-Scoring window, net Sharpe 1998--2021 & $K=8$ & $K=30$\\
+ & \multicolumn{2}{c}{1998--2021} & \multicolumn{2}{c}{2022--2025}\\
+\cmidrule(lr){2-3}\cmidrule(l){4-5}
+Scoring window, net Sharpe & $K=8$ & $K=30$ & $K=8$ & $K=30$\\
 \midrule
-Since 1998 & $\mathbf{1.99}$ & $\mathbf{1.93}$\\
-Last 8 years & $1.74$ & $1.78$\\
-Last 4 years & $1.84$ & $1.74$\\
+Since 1998 & $\mathbf{1.99}$ & $\mathbf{1.93}$ & $-0.40$ & $+0.13$\\
+Last 8 years & $1.74$ & $1.78$ & $-0.38$ & $-0.01$\\
+Last 4 years & $1.84$ & $1.74$ & $-0.49$ & $+0.23$\\
 \bottomrule
 \end{tabular}
 \end{center}
 \begin{itemize}
-\item Both shorter windows do worse at both $K$, by $0.15$ to $0.25$.
-\item They switch more and chase market exposure: more volatility, no more return.
+\item 1998--2021: both shorter windows do worse at both $K$, by $0.15$ to $0.25$.
+\item 2022--2025: every window within $0.15$ of ``since 1998''.
+\item Short windows switch more and chase market exposure: more volatility, no more return.
 \end{itemize}
 \claim{Long records choose better than short ones.}
 \src{With the band: 252 choices at each $K$. Last 8 or 4 years: each January, the net Sharpe over the 8 or 4 years before
-(every year since 1998 while there are fewer). 2022--2025: every window within $0.15$ of ``since 1998''.}
+(every year since 1998 while there are fewer).}
 \end{frame}
 
 \subsection{The no-trade rule in the loss}
@@ -1219,29 +1238,61 @@ Turnover per day. $\delta=0.12\%$ was read off 1998--2021, so its rows are a dia
 \section{Conclusions and next steps}
 \sectiontitlepage
 
+% Every curve after costs (the user's request, 2026-11-16): analysis/gap/fig2_ours.py --deck -> assets/net_K030.png.
+% Walk-forward and hindsight: SCAN_BUFFER_GRID.md (ensemble + band, K = 30); the band of 0.04% added after or in the loss:
+% BAND_TRAINED.md (ensembles, movers-only rescale); the paper: Figure 2 less Table 2's average cost (PAPER_BY_YEAR.md).
+\begin{frame}{After Costs: The Paper Against Ours}
+\small
+Cumulative return after costs, $K=30$: the paper's estimate, and our seed ensembles with the no-trade band.
+\par\smallskip
+\includegraphics[width=\linewidth]{assets/net_K030.png}
+\claim{After costs, the paper's curve is flat from 2010, and ours catch up with it by 2021.}
+\src{Paper: Figure 2 less Table 2's average cost (see \emph{The paper's Figure 2, after costs}). Walk-forward and hindsight choose
+the training setting and the band width (see \emph{Adding a no-trade band}). Band added after and in the loss: the paper's settings
+with the band of $0.04\%$, chosen on 1996--1997 (see \emph{The no-trade rule in the loss}).}
+\end{frame}
+
 \begin{frame}{Conclusions}
 \small
-\textbf{What we built:}
+\textbf{What we built}
 \begin{itemize}
-\item The model: attention factors and LongConv, trained on the annualized net Sharpe.
-\item The data: 39 characteristics from WRDS, checked against the Chen--Pelger--Zhu panel, with no filling.
-\item The universe: the buffered list with rebuilt 30-day history.
+\item The paper's model, on data rebuilt from WRDS: 39 characteristics that match
+      the Chen--Pelger--Zhu panel, with no filling.
+\item Our universe, D: the buffered list with rebuilt 30-day history.
 \end{itemize}
-\textbf{What we get so far}, net Sharpe in 1998--2021 (2022--2025):
+\textbf{What we find}, $K=30$, net Sharpe 1998--2021 (2022--2025)
 \begin{itemize}
-\item D, $K=30$, seed ensemble: $1.70$ ($-0.18$); the paper: $2.28$.
-\item With the band, $K=30$: $2.09$ ($-0.18$) chosen on 1996--1997, $1.93$ ($+0.13$) by walk-forward.
-\item Walk-forward: better at $K=8$, worse at $K=30$. The band in the loss: no gain.
+\item At the paper's settings, close to its Sharpe before costs, but $1.70$ ($-0.18$) after costs, against $2.28$.
+\item Tuned, with the no-trade band: $2.09$ ($-0.18$) chosen on 1996--1997, $1.93$ ($+0.13$) by walk-forward,
+      $2.28$ ($+0.13$) with hindsight.
+\end{itemize}
+\textbf{A critique of the paper}
+\begin{itemize}
+\item Its cumulative-return graph, Figure 2, leaves out transaction costs without saying so.
+      After the paper's own average cost it is flat from 2010, not ``strong throughout''.
+\item Scored after costs, as all our results are, our curves catch up with it by 2021.
 \end{itemize}
 \end{frame}
 
+% Two groups (the user's request, 2026-11-16): more scans; model modifications.
 \begin{frame}{Next Steps}
+\begin{enumerate}
+\item \textbf{More scans}
 \begin{itemize}
-\item $K=5$ to $15$: a fixed setting that holds beyond 1996--1997.
-\item $\lambda_{\rm Var}$ of 0 to 30 gains 0.15 to 0.20 at $K=30$: test the other $K$.
-\item More seeds in the ensemble.
-\item Where the remaining gap to the paper comes from.
+\item Over the parameter space: epochs, $K$, $\lambda_{\rm Var}$, $\lambda_{\rm ridge}$, training cost.
+      At $K=5$ to $15$ the validation years pick long training, which overfits;
+      $\lambda_{\rm Var}$ of 0 to 30 gains 0.15 to 0.20 at $K=30$.
+\item More seeds in the ensemble, to reduce uncertainty: two seeds' trades correlate only at 0.60.
 \end{itemize}
+\medskip
+\item \textbf{Model modifications}
+\begin{itemize}
+\item Make the model aware of what it holds: today yesterday's portfolio enters only the loss, as the cost of trading.
+\item Potential change: give the network the position held, and let it learn when to trade:
+      each stock's band width and speed, by reinforcement learning.
+\item Then let it see the market and the other stocks: a market-wide state, attention across stocks.
+\end{itemize}
+\end{enumerate}
 \end{frame}
 
 \begin{frame}{References}

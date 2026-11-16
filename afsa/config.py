@@ -108,6 +108,8 @@ class Config:
     kernel_init_std: float = _f(1.0, "scale of the random draw in the geometric-decay kernel initialization")
     resid_scale: float = _f(100.0, "the residuals enter the sequence model multiplied by this (100 = per cent)")
     cumulative: bool = _f(False, "feed the running sum of the lagged residuals (a residual price path) instead of the residuals")
+    cross_heads: int = _f(0, "cross-stock attention after the sequence model: before the read-out, each stock's hidden state also reads those of the day's stocks with a signal through this many attention heads (0 = off; analysis/rl/CROSS_STOCK.md)")
+    cross_head_dim: int = _f(8, "cross-stock attention: the size of each head")
     # ---- objective ----------------------------------------------------------------------------
     lambda_var: float = _f(100.0, "weight of the explained-variance term")
     sharpe_days: float = _f(252.0, "the Sharpe term is scaled by sqrt(sharpe_days): 252 = annualized, 1 = daily")
@@ -164,6 +166,8 @@ class Config:
             raise ValueError("the learned trading rule needs 0 < head_band0 < head_band_max and 0 < head_eta0 < 1")
         if self.trade_head and (self.band > 0 or self.band_eta < 1):
             raise ValueError("trade_head learns each stock's band and speed: leave band at 0 and band_eta at 1")
+        if self.cross_heads < 0 or self.cross_head_dim < 1:
+            raise ValueError("cross_heads must be at least 0 and cross_head_dim at least 1")
         if (self.trade_state or self.trade_market) and not self.trade_head:
             raise ValueError("trade_state and trade_market extend the learned trading rule: set trade_head true")
         if self.neutral and self.neutral not in NEUTRAL_SETS:

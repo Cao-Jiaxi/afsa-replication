@@ -20,11 +20,16 @@ Nothing here was trained. Every number comes from existing runs, and each one ci
   - Training through the same band ties with adding it afterwards: +0.02 [−0.06, +0.09].
   - So one fixed trading rule already captures what knowing the holdings gives. What is left to test is a rule whose width and speed change by stock and day.
 - **Recommended first experiment: the per-stock network also outputs its own band width and trading speed (section 5.1).** The gradient stays exact. It adds 66 parameters per model and contains both the current model and the fixed band as special cases. It costs about 7 minutes of GPU at K = 30. Second, a CPU-only check: shrink each stock's ensemble target where the seeds disagree (offline RL's pessimism, p383–p384; section 6.1).
-- **Tested since (2026-11-16, D at K = 30, each pre-registered).** Every decision on 1996–1997 was *inconclusive* or *not kept*. The test years are reported only.
-  - **5.1, the learned trading rule** ([TRADING_RULE_RESULTS.md](TRADING_RULE_RESULTS.md)): 1.89 as a model and 2.33 as an ensemble on 1998–2021. It does this by trading far less.
-  - **5.2, the rule's view of the book** ([TRADING_STATE.md](TRADING_STATE.md)): slightly below the rule on 1998–2021. It learned to add readily and reduce reluctantly.
-  - **5.2 with 5.4's market view:** 1.99 and 2.66 on 1998–2021, +0.49 above the fixed band trained inside the model with an interval excluding 0, but not clearly above the rule.
-  - **6.1, pessimism** ([PESSIMISM_RESULTS.md](PESSIMISM_RESULTS.md)): kept for no ensemble.
+- **Tested since (2026-11-16, on D, each pre-registered).** The test years are reported only.
+  - **5.1, the learned trading rule** ([TRADING_RULE_RESULTS.md](TRADING_RULE_RESULTS.md)): *inconclusive* on 1996–1997. On 1998–2021 it nets 1.89 as a model and 2.33 as an ensemble, by trading far less.
+  - **5.2, the rule's view of the book** ([TRADING_STATE.md](TRADING_STATE.md)): *inconclusive*, and slightly below the rule on 1998–2021. It learned to add readily and reduce reluctantly.
+  - **5.2 with 5.4's market view (SM):** *inconclusive* at K = 30 against the rule.
+    - A firmer test on fresh cells (K = 8, K = 100, new seeds; [SM_FIRM_RESULTS.md](SM_FIRM_RESULTS.md)) is *better* than D + band after on 1996–1997 for the model. That is the only positive pre-registered decision so far.
+    - On 1998–2021 those cells gain only +0.08 to +0.20, within the noise, all of it in 1998–2005.
+    - In 2022–2025 they lose 0.7–0.9.
+    - It is reported as a deployment variant ([DEPLOYMENT.md](DEPLOYMENT.md)), not as a Table 2 row.
+  - **5.4, cross-stock attention on the signal** ([CROSS_STOCK.md](CROSS_STOCK.md)): *inconclusive*, and slightly below D. The network leans on the other stocks from 2006 on, and that does not carry to the next year.
+  - **6.1, pessimism** ([PESSIMISM_RESULTS.md](PESSIMISM_RESULTS.md), and again on the fresh cells): kept for none of 26 ensemble–form pairs.
   - **In 2022–2025** none of them helps.
 - **What RL cannot do here.**
   - A trading policy can only spend less of the gross edge on costs. It cannot create the edge.
@@ -178,7 +183,11 @@ This is a larger change that adds capacity: an ablation for later.
 - On 1998–2021 it nets 1.99 as a model and 2.66 as an ensemble, +0.23 and +0.33 above the rule without views, within the noise.
 - Against the fixed band trained inside the model it gains +0.49 for both the model and the ensemble, and both intervals exclude 0.
 - In 2022–2025 it does not help.
-- The cross-stock attention on the signal is still untested.
+
+**The attention on the signal was built and tested too (2026-11-16): [CROSS_STOCK.md](CROSS_STOCK.md), `--cross_heads 2`.**
+- The pre-registered decision is *inconclusive*: +0.04 for the model and +0.05 for the ensemble + band on 1996–1997.
+- On 1998–2021 it is slightly below D (−0.06 to −0.08, within the noise), and also in 2022–2025.
+- From 2006 on, the message from the other stocks carries 34–64% of the signal's cross-sectional variance, so the network does use it; it just does not generalize.
 
 ## 6. RL ideas outside the policy network
 
@@ -195,6 +204,9 @@ This is a larger change that adds capacity: an ablation for later.
   - At the chosen κ the test years move by +0.03 to +0.07 for the learned rules' ensembles (shrink).
   - They move by +0.14 [+0.11, +0.18] for the fixed band trained inside the model (widen). The test years prefer wider bands anyway (hindsight's 1.2e-3 against 4e-4), so that gain cannot be credited to the disagreement.
   - Widening hurts the learned rules, whose bands are already wide.
+- **Run again on fresh cells (2026-11-16, [SM_FIRM_RESULTS.md](SM_FIRM_RESULTS.md); pre-registered).** SM's and D + band after's ensembles at K = 8 and 100, and with six seeds at K = 30, where s comes from six seeds.
+  - κ = 0 won on 1996–1997 in 15 of 16 cases, so pessimism is kept for none.
+  - The one exception is a widened band for D's ensemble at K = 100 (+0.10 [−0.08, +0.29]). It gains +0.17 on 1998–2021, which again matches the test years' taste for wider bands.
 
 ### 6.2 λ_Var as an auxiliary task
 

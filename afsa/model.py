@@ -19,6 +19,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.autograd.function import once_differentiable
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from .config import CHARACTERISTICS, N_CHAR, N_LEVEL, NEUTRAL_SETS, Config
 from .panel import Batch, BlockBatch
@@ -67,6 +68,11 @@ def init_member(cfg: Config, seed: int) -> dict[str, torch.Tensor]:
             p["delta_v"], p["eta_v"] = torch.zeros(len(STATE_FEATURES)), torch.zeros(len(STATE_FEATURES))
         if cfg.trade_market:            # what it sees of the day's market (AFSAModel.dial_logits); zero = without it
             p["delta_u"], p["eta_u"] = torch.zeros(d), torch.zeros(d)
+    if cfg.cross_heads:                 # cross-stock attention (AFSAModel.cross), drawn after everything else so that the
+        e = cfg.cross_heads * cfg.cross_head_dim     # other parameters start as without it; zero output weights make the
+        for n in ("xq", "xk", "xv"):                 # model start as without it too
+            p[f"{n}_w"], p[f"{n}_b"] = uniform((d, e), d), uniform((e,), d)
+        p["xo_w"], p["xo_b"] = torch.zeros((e, d)), torch.zeros(d)
     return p
 
 
@@ -291,9 +297,10 @@ class AFSAModel(nn.Module):
         return torch.addcmul(getattr(self, f"norm_b{l}")[:, None, :], h, getattr(self, f"norm_g{l}")[:, None, :])
 
     def signal(self, x: torch.Tensor, train: bool = False, gens=None, n_cols: list[int] | None = None,
-               hidden: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+               hidden: bool = False, keys: torch.Tensor | None = None) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """omega^port = LongConv(lagged residuals). x: [M, T, U, L], oldest lag first. Returns [M, T, U], and with
-        `hidden` also the hidden state that the read-out reads, [M, T, U, d] (the input of `dials`).
+        `hidden` also the hidden state that the read-out reads, [M, T, U, d] (the input of `dials`). With
+        cfg.cross_heads, that hidden state first reads the day's stocks with a signal (keys [M, T, U]; `cross`).
 
         Each lagged residual is embedded as u[l, h] = in_w[h] x[l] + in_b[h]; a block computes y = K * u + D u
         along time (causal: y[i] = sum_j u[j] K[i - j]) followed by GELU, dropout, a linear layer, a residual
@@ -329,8 +336,38 @@ class AFSAModel(nn.Module):
             u_last = u[:, :, -1, :]
             conv = torch.einsum("mnlh,mhl->mnh", u, k.flip(-1)) + getattr(self, f"skip{last}")[:, None, :] * u_last
         h = self._block(last, u_last, conv, self._keep((M, T, U, d), x, gens, n_cols) if drop else None)
+        if cfg.cross_heads:
+            if keys is None:
+                raise ValueError("cross-stock attention needs the day's stocks with a signal (keys)")
+            h = self.cross(h.view(M, T, U, d), keys).view(M, T * U, d)
         s = torch.baddbmm(self.head_b[:, None, None], h, self.head_w[:, :, None]).view(M, T, U)
         return (s, h.view(M, T, U, d)) if hidden else s
+
+    def cross(self, z: torch.Tensor, keys: torch.Tensor) -> torch.Tensor:
+        """Cross-stock attention (cfg.cross_heads; analysis/rl/CROSS_STOCK.md). Each stock's hidden state z [M, T, U, d]
+        plus a message read from the day's stocks with a signal (keys [M, T, U]):
+
+            z'_i = z_i + W_o concat_h( sum_j softmax_j(q_hi' k_hj / sqrt(E)) v_hj ) + b_o,
+
+        with q = W_q z_i + b_q, k = W_k z_j + b_k, v = W_v z_j + b_v split into the heads (size E = cfg.cross_head_dim),
+        and j over the keys of the same day and model only. W_o and b_o start at zero, so the model starts as without
+        the layer. A day without keys reads nothing. Every input is known at the close of the day before."""
+        cfg = self.cfg
+        M, T, U, d = z.shape
+        H, E = cfg.cross_heads, cfg.cross_head_dim
+
+        def heads(n: str) -> torch.Tensor:                                    # [M*T, H, U, E]
+            v = torch.einsum("mtud,mde->mtue", z, getattr(self, f"{n}_w")) + getattr(self, f"{n}_b")[:, None, None]
+            return v.reshape(M * T, U, H, E).transpose(1, 2)
+        mask = torch.zeros(keys.shape, dtype=z.dtype, device=z.device).masked_fill(~keys, -1e9).view(M * T, 1, 1, U)
+        if z.is_cuda:                     # the memory-efficient kernel: never the U x U score matrix of the plain one
+            with sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION):
+                a = F.scaled_dot_product_attention(heads("xq"), heads("xk"), heads("xv"), attn_mask=mask)
+        else:
+            a = F.scaled_dot_product_attention(heads("xq"), heads("xk"), heads("xv"), attn_mask=mask)
+        a = a.transpose(1, 2).reshape(M, T, U, H * E)
+        message = torch.einsum("mtue,med->mtud", a, self.xo_w) + self.xo_b[:, None, None]
+        return z + message * keys.any(-1)[..., None, None]
 
     # ------------------------------------------------------------------ learned trading rule (analysis/rl/TRADING_RULE.md)
     def dials(self, z: torch.Tensor, has_signal: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -431,10 +468,10 @@ class AFSAModel(nn.Module):
         n_cols = b.n_cols.tolist() if (train and gens is not None and cfg.dropout > 0) else None
         has_signal = b.member if cfg.entry_rule == "member" else b.valid                       # "run": no signal without L prior days
         if cfg.trade_head:                                                                     # the learned trading rule
-            w_port, z = self.signal(x, train, gens, n_cols, hidden=True)
+            w_port, z = self.signal(x, train, gens, n_cols, hidden=True, keys=has_signal[:, L:])
             dial = self.dial_inputs(z, has_signal[:, L:])
         else:
-            w_port, dial = self.signal(x, train, gens, n_cols), None
+            w_port, dial = self.signal(x, train, gens, n_cols, keys=has_signal[:, L:]), None
         w_port = w_port * has_signal[:, L:]
         if cfg.signal_center:
             w_port = self.center(w_port, has_signal[:, L:])
@@ -470,10 +507,10 @@ class AFSAModel(nn.Module):
             x = x.cumsum(-1)                                                                   # residual price path over the lookback
         n_cols = [S] * M if (train and gens is not None and cfg.dropout > 0) else None
         if cfg.trade_head:                                                                     # the learned trading rule
-            w_port, z = self.signal(x, train, gens, n_cols, hidden=True)
+            w_port, z = self.signal(x, train, gens, n_cols, hidden=True, keys=b.signal)
             dial = self.dial_inputs(z, b.signal)
         else:
-            w_port, dial = self.signal(x, train, gens, n_cols), None
+            w_port, dial = self.signal(x, train, gens, n_cols, keys=b.signal), None
         w_port = w_port * b.signal
         if cfg.signal_center:
             w_port = self.center(w_port, b.signal)

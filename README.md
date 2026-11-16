@@ -16,7 +16,13 @@ We replicate Epstein, Wang, Choi and Pelger, *Attention Factors for Statistical 
     - 33 of the 35 monthly characteristics equal the Chen-Pelger-Zhu panel in 98.7–100% of stock-months. The other two (Resid_Var, Beta) agree in rank.
     - Missing characteristics are left at rank 0, not carried forward.
 - **Model.** The paper's model as specified, with each choice the paper leaves open documented in [CLAUDE.md §7](CLAUDE.md).
-- **Results.** Before costs we are close to the paper (gross SR 3.7 against 3.97 at K = 30). After costs we are well below it, because our models trade more. The main specification (training cost, ridge, universe) is still being settled.
+- **Results** at K = 30, as net Sharpe ratios on 1998–2021 after the paper's costs (the paper: 2.28).
+    - Before costs we are close to the paper (gross SR 3.7 against 3.97). After costs our model is well below it (1.31 on dataset D, defined in the table below), because it trades more.
+    - Averaging the seeds' portfolio weights and adding a no-trade band lifts this to 2.09 when the training setting and the band width are chosen on 1996–1997, as the paper chooses its hyperparameters, and to 1.93 when they are re-chosen each January from the years before. It reaches the paper's 2.28 only with the setting and band that turn out best on 1998–2021 itself, which no one could have picked in advance ([SCAN_BUFFER_GRID.md](analysis/gap/SCAN_BUFFER_GRID.md)). These are deployment layers, not Table 2 rows.
+    - The gap to the paper is in 2001–2006. Rebuilt year by year from its Figure 2 (net of Table 2's average cost), the paper earned 14–19% a year before costs at 1–2% volatility until about 2006, while our edge broke in spring 2001. From 2007 on, our best result in hindsight is level with the paper's or above it ([PAPER_BY_YEAR.md](analysis/gap/PAPER_BY_YEAR.md)).
+    - In 2022–2025 the model loses money after costs (−0.34). The ensemble with the band nets +0.13, but only thanks to the hedge's short positions in stocks too new to have a signal, three of which collapsed. With those positions set aside it nets −0.37, and none of the fixes we tried lifts it above zero ([EXTENSION.md](analysis/gap/EXTENSION.md)).
+    - We tested designs from the course's reinforcement-learning lecture: a learned trading rule and two richer versions of it, attention across stocks, and pessimism where the seeds disagree. Each decision rule was written down before its test ran. All came out inconclusive or not kept except one: on fresh runs, the richest trading rule (SM) beat D's model with a band added after training on 1996–1997. SM is reported below as a deployment variant ([analysis/rl/](analysis/rl/)).
+    - The main specification (training cost, ridge, universe, λ_Var) is still being settled.
 
 K = 30, net Sharpe ratio, annualized, at the paper's costs (5 bp per unit of turnover, 1 bp per unit short). "Model" is the average over 3 seeds, which is what the paper's tables report. "Ensemble" averages the 3 seeds' portfolio weights. All runs use one setting: ridge 1e-4, trained at 5 bp, 30 epochs.
 
@@ -30,6 +36,16 @@ K = 30, net Sharpe ratio, annualized, at the paper's costs (5 bp per unit of tur
 
 Sources: [analysis/gap/DATASETS.md](analysis/gap/DATASETS.md) for this table; [analysis/gap/RESULTS.md](analysis/gap/RESULTS.md) for every run; [analysis/gap/REPORT.md](analysis/gap/REPORT.md) for why we differ from the paper; the scans in `analysis/gap/SCAN*.md`.
 
+**A deployment variant, not a Table 2 row.** It is dataset D's model trained with a learned trading rule, from the course's reinforcement-learning material, traded as a seed ensemble. The rule sets each stock's no-trade band and trading speed every day from the stock's history, its position and the day's market. It trades 35–45% less than the plain ensemble with a fixed band added after training. Net Sharpe ratio, same costs, 1998–2021 unless the column says otherwise:
+
+| K | Paper, Table 2 (model) | D model | D ensemble + band after | Learned rule (SM), ensemble, 1998–2021 | Learned rule (SM), ensemble, 2022–2025 |
+| --- | --- | --- | --- | --- | --- |
+| 8 | 1.94 | 1.52 | 2.13 | 1.95 | −0.67 |
+| 30 (6 seeds) | 2.28 | 1.32 | 2.22 | 2.61 | −0.50 |
+| 100 | 2.19 | 0.77 | 1.83 | 2.09 | −0.73 |
+
+It beats the fixed band on 1998–2021 at K = 30 and 100, mostly in 1998–2005, and trails it in 2022–2025 at every K (D ensemble + band after: −0.50, +0.08, +0.36). An ensemble with a trading rule is not the paper's object, whose rows are seed-averaged models. See [analysis/rl/DEPLOYMENT.md](analysis/rl/DEPLOYMENT.md).
+
 ## Repository
 
 | Path | What it holds |
@@ -38,7 +54,7 @@ Sources: [analysis/gap/DATASETS.md](analysis/gap/DATASETS.md) for this table; [a
 | `tests/` | Unit tests (synthetic data; tests that need the data files are skipped without them). `tests/hardware/` has GPU timing tests |
 | `analysis/gap/` | Scripts and reports on the gap to the paper, the hyperparameter scans and the dataset comparison |
 | `analysis/characteristics/` | How each of the 39 characteristics is built from WRDS, and how it matches the Chen-Pelger-Zhu panel |
-| `analysis/rl/` | The course's reinforcement-learning lecture condensed, how it applies to AFSA, and tests of a learned trading rule built from it |
+| `analysis/rl/` | The course's reinforcement-learning lecture condensed, how it applies to AFSA, and pre-registered tests of the designs built from it: a learned trading rule and its views of the book and the market, cross-stock attention, pessimism; the deployment variant |
 | `slides/` | The Phase I and final presentations (Beamer, pdfLaTeX) |
 | `CLAUDE.md` | The project guide: data, model, every open decision with its reason, status, all results and open questions. It also serves as instructions for the coding assistant |
 | `NOTES.md` | Details behind the guide |

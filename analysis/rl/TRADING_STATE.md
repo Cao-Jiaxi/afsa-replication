@@ -30,6 +30,15 @@ The steps and symbols are those of TRADING_RULE.md; **new** marks what changes.
   - In later windows the band's asymmetry fades while the speed's grows. In 2014–2025, S's median speed is 0.76 for adding trades and 0.60 for reducing ones.
 - **What the market's view adds.** SM trades least (0.28 a day; its ensemble 0.26) at the lowest σ (its ensemble 3.39% a year against 3.80%). In 2014–2021 its speed fell to a median of 0.32–0.49, against 0.56–0.59 for the rule. There its ensemble netted 1.36 against 0.91, which is +0.45 but with an interval of [−0.30, +1.06].
 
+**A firmer test of SM** ([SM_FIRM_RESULTS.md](SM_FIRM_RESULTS.md); CLAUDE.md §7 row "a firmer test of SM"). SM was run on fresh cells (K = 8, K = 100, and K = 30 with seeds 3–5) and compared with D + band after.
+- **Decision.** The pre-registered decision (1996–1997, the cells pooled) is *better* for the model, +0.79 [+0.02, +1.62], but not for the ensemble, +0.23 [−0.53, +1.03].
+- **1998–2021, the fresh cells pooled:** +0.08 for the model and +0.20 for the ensemble, both within the noise.
+  - The gain is in 1998–2005 (+0.73 and +0.49).
+  - 2022–2025 is worse: −0.86 [−1.63, −0.11] for the model and −0.74 [−1.46, +0.00] for the ensemble.
+- **With six seeds at K = 30,** SM's ensemble nets 2.61 against 2.22 on 1998–2021 (+0.39 [+0.08, +0.71]).
+- **At K = 8 it trails;** at K = 100 its ensemble leads by +0.26 [−0.03, +0.57].
+- **Pessimism,** repeated on these cells, is kept for none.
+
 ## Why
 
 - **The deck's portfolio MDP puts the holdings in the state** (p482). Without them the policy has restricted observation (p285): it cannot do "I already hold most of this, so leave it".
