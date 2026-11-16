@@ -61,6 +61,15 @@ CHARACTERISTICS: tuple[str, ...] = tuple(c for g in CHAR_GROUPS.values() for c i
 N_CHAR = len(CHARACTERISTICS)          # 39 cross-sectional ranks, one value per stock
 N_LEVEL = N_CHAR + 1                   # 39 cross-sectional medians + rf, one value per day
 LEVEL_NAMES: tuple[str, ...] = tuple(f"med_{c}" for c in CHARACTERISTICS) + ("rf",)
+# Sets of characteristics a day's weights can be made orthogonal to, always with the constant (Config.neutral;
+# analysis/gap/EXTENSION.md): the saved books carry standing positions along these ranks, not only residual reversal.
+_RISK = ("Beta", "Variance", "Resid_Var", "STD_W1", "LME", "LTurnover")
+NEUTRAL_SETS: dict[str, tuple[str, ...]] = {
+    "dollar": (),                                                          # the constant only
+    "risk": _RISK,
+    "riskmom": _RISK + ("r2_1", "r12_2", "r12_7", "r36_13", "Rel2High"),
+    "all": CHARACTERISTICS,
+}
 N_SLOTS = 500                          # at most 500 stocks in the universe on any day (a buffered list: n_slots)
 TRADING_DAYS = 252
 
@@ -109,6 +118,10 @@ class Config:
     # ---- trading layer (CLAUDE.md section 7; off at the defaults: the book is the target) ----------
     band: float = _f(0.0, "no-trade band inside the model: each day the book skips a stock whose gap to the target is at most `band` and trades the rest of the gap less `band`; return and costs are the book's (0 = no layer)")
     band_eta: float = _f(1.0, "share of the remaining gap the book trades each day (1 = all of it)")
+    # ---- neutrality (analysis/gap/EXTENSION.md; off at the defaults) ------------------------------
+    signal_center: bool = _f(False, "subtract from the day's signals their mean over the stocks that have one, so the sequence model cannot hold the same position in every stock")
+    neutral: str = _f("", "make the day's weights orthogonal to the constant and to a set of the day's characteristic ranks before they are scaled to unit gross exposure: " + ", ".join(NEUTRAL_SETS) + " (empty = off)")
+    nosignal_hedge: bool = _f(True, "a member without a signal holds the position the factor hedge gives it (true, as built); false: it holds none, and the weights of the others are scaled to unit gross exposure")
     # ---- optimization -------------------------------------------------------------------------
     epochs: int = _f(30, "passes over the training window")
     batch_days: int = _f(126, "consecutive trading days per batch")
@@ -140,6 +153,11 @@ class Config:
             raise ValueError("lr_schedule must be constant or cosine")
         if self.band < 0 or not 0 < self.band_eta <= 1:
             raise ValueError("band must be at least 0 and band_eta in (0, 1]")
+        if self.neutral and self.neutral not in NEUTRAL_SETS:
+            raise ValueError(f"neutral must be empty or one of {list(NEUTRAL_SETS)}")
+        if self.neutral and not self.nosignal_hedge:
+            raise ValueError("neutral with nosignal_hedge false is not neutral: the positions of members without a signal "
+                             "are dropped after the projection")
         if min(self.K, self.d_x, self.d_model, self.n_layers, self.lookback, self.batch_days, self.epochs) < 1:
             raise ValueError("K, d_x, d_model, n_layers, lookback, batch_days and epochs must be at least 1")
 

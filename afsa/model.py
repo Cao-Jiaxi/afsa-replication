@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.autograd.function import once_differentiable
 
-from .config import N_CHAR, N_LEVEL, Config
+from .config import CHARACTERISTICS, N_CHAR, N_LEVEL, NEUTRAL_SETS, Config
 from .panel import Batch, BlockBatch
 
 ATTENTION_PARAMS = ("W_rank", "W_level", "Q")       # the factor model; every other parameter is the sequence model
@@ -141,6 +141,7 @@ class AFSAModel(nn.Module):
         self.register_buffer("level_std", torch.ones(self.n_models, N_LEVEL))
         self.to(device=device, dtype=dtype)
         self.solve_dtype = torch.float64 if cfg.solve_dtype == "float64" else dtype
+        self.neutral_cols = [CHARACTERISTICS.index(c) for c in NEUTRAL_SETS[cfg.neutral]] if cfg.neutral else []
 
     # ------------------------------------------------------------------ bookkeeping
     def param_groups(self, weight_decay: float) -> list[dict]:
@@ -277,6 +278,29 @@ class AFSAModel(nn.Module):
         h = self._block(last, u_last, conv, self._keep((M, T, U, d), x, gens, n_cols) if drop else None)
         return torch.baddbmm(self.head_b[:, None, None], h, self.head_w[:, :, None]).view(M, T, U)
 
+    # ------------------------------------------------------------------ neutrality (analysis/gap/EXTENSION.md)
+    @staticmethod
+    def center(w_port: torch.Tensor, has_signal: torch.Tensor) -> torch.Tensor:
+        """The signals minus their mean over the day's stocks that have one (cfg.signal_center). [M, D, U]"""
+        n = has_signal.sum(-1, keepdim=True).clamp_min(1)
+        return (w_port - w_port.sum(-1, keepdim=True) / n) * has_signal
+
+    def neutralize(self, w: torch.Tensor, X: torch.Tensor, member: torch.Tensor) -> torch.Tensor:
+        """w minus its least-squares projection, over the day's members, on the constant and the ranks X of the
+        characteristics of cfg.neutral: afterwards sum(w) = 0 and sum(w * rank) = 0 for each of them.
+
+        w [M, D, U] (0 outside the members, and it stays 0 there), X [M, D, U, p] those ranks, known before the day,
+        member [M, D, U]. A rank that is the same for every member that day (all missing: rank 0) is skipped by the
+        tiny ridge. The p + 1 normal equations are formed in the precision of w and only solved in that of the ridge
+        solve, so a float32 book is neutral to float32 accuracy of the book before the projection: at most 6.2e-7 of
+        unit gross exposure in the stored books of the neutral trials (analysis/gap/EXTENSION.md, batch 2)."""
+        A = torch.cat([torch.ones_like(w)[..., None], X], dim=-1) * member[..., None]          # [M, D, U, p + 1]
+        At = A.transpose(-1, -2)
+        G = torch.matmul(At, A).to(self.solve_dtype)
+        G = G + 1e-8 * torch.eye(G.shape[-1], device=G.device, dtype=G.dtype)
+        coef = torch.linalg.solve(G, torch.matmul(At, w[..., None]).to(G.dtype)).to(w.dtype)
+        return w - torch.matmul(A, coef).squeeze(-1)
+
     # ------------------------------------------------------------------ the whole model
     def forward(self, b: Batch | BlockBatch, train: bool = False, gens=None) -> dict[str, torch.Tensor]:
         """Runs T consecutive days. With L = lookback: rows 0..L-1 only supply residual history, rows L..T-1 get
@@ -302,7 +326,13 @@ class AFSAModel(nn.Module):
         n_cols = b.n_cols.tolist() if (train and gens is not None and cfg.dropout > 0) else None
         has_signal = b.member if cfg.entry_rule == "member" else b.valid                       # "run": no signal without L prior days
         w_port = self.signal(x, train, gens, n_cols) * has_signal[:, L:]
+        if cfg.signal_center:
+            w_port = self.center(w_port, has_signal[:, L:])
         w = self.project(wF[:, L:], (G[:, L:], chol[:, L:]), w_port)                           # (omega^eps)' omega^port
+        if cfg.neutral:
+            w = self.neutralize(w, b.X[:, L:][..., self.neutral_cols], b.member[:, L:])
+        if not cfg.nosignal_hedge:                                                             # no position without a signal
+            w = w * has_signal[:, L:]
         w = w / w.abs().sum(-1, keepdim=True).clamp_min(1e-12)                                 # ||omega||_1 = 1
         return {"wF": wF, "eps": eps, "w_port": w_port, "w": w,
                 **self._portfolio(w, b.R[:, L:], eps[:, L:], b.member[:, L:], b.rf[:, L:])}
@@ -330,7 +360,15 @@ class AFSAModel(nn.Module):
             x = x.cumsum(-1)                                                                   # residual price path over the lookback
         n_cols = [S] * M if (train and gens is not None and cfg.dropout > 0) else None
         w_port = self.signal(x, train, gens, n_cols) * b.signal
+        if cfg.signal_center:
+            w_port = self.center(w_port, b.signal)
         w = self.project(wF[m, q], (G[m, q], chol[m, q]), w_port)                              # (omega^eps)' omega^port on the day
+        if cfg.neutral:                                                                        # the day's own row of its block
+            cols = torch.as_tensor(self.neutral_cols, dtype=torch.long, device=w.device)
+            X_day = b.X.view(M, rows, S, C)[m[:, :, None], q[:, :, None], :, cols].transpose(2, 3)   # [M, D+1, S, p]
+            w = self.neutralize(w, X_day, b.member.view(M, rows, S)[m, q])
+        if not cfg.nosignal_hedge:                                                             # no position without a signal
+            w = w * b.signal
         w = w / w.abs().sum(-1, keepdim=True).clamp_min(1e-12)                                 # ||omega||_1 = 1
         on, idx = b.slot >= 0, b.slot.clamp_min(0)
 

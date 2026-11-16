@@ -123,8 +123,8 @@
 %
 % Conventions of the Phase I deck:
 %   \claim{...}       the frame's takeaway: one bold line in SBU red
-%   \learn{...}       learned parameters, red inside equations
-%   \src{...}         small grey source line at the bottom of a frame
+%   \learn{...}       learned parameters, red inside equations (never a function's name)
+%   \src{...}         small source line at the bottom of a frame (grey in Phase I)
 %   \threequestions, \strategyroadmap
 %                     the boxed three-step roadmap; a section divider repeats
 %                     the box with the current step in \textbf
@@ -137,27 +137,33 @@
 %   order             title, main slides, References, Thanks!, backup slides
 % ---------------------------------------------------------------------------
 
-% The talk's own roadmap, in the form of Phase I's: three questions, our answers in red.
-% \talkroadmap{n} sets question n in bold (0: none).
-\newcommand{\rmline}[2]{\ifnum#1=\rmcurrent\relax\textbf{#2}\else\text{#2}\fi}
-\newcommand{\talkroadmap}[1]{%
-  \def\rmcurrent{#1}%
-  \[
-  \setlength{\arraycolsep}{3.5pt}
-  \boxed{\begin{array}{ccccc}
-    \substack{\rmline{1}{How do we}\\\rmline{1}{train the model?}}
-    &\longrightarrow&
-    \substack{\rmline{2}{Which inputs}\\\rmline{2}{do we feed?}}
-    &\longrightarrow&
-    \substack{\rmline{3}{Which 500}\\\rmline{3}{stocks?}}\\[4mm]
-    \textcolor{SBred}{\text{Annualized net Sharpe}}
-    &&
-    \textcolor{SBred}{\text{No filling}}
-    &&
-    \textcolor{SBred}{\text{Buffered + rebuilt}}
-  \end{array}}
-  \]
+% Title pages (the user's requests, 2026-11-15). Sections 2 to 6 open with \sectiontitlepage, and every
+% subsection opens with one too. The section's name is large and bold, at the same place on every title
+% page; a subsection's name is set below it in smaller type. \secname and \subsecname are plain text
+% (\insertsectionhead is a link and would take the link colour).
+\newcommand{\titlepageframe}[1]{%
+  \begin{frame}{\phantom{Section}}
+  \vfill
+  \centering
+  {\color{SBred}\LARGE\bfseries\secname\par}
+  \medskip
+  {\color{SBred}\large#1\par}
+  \vfill\vfill
+  \end{frame}
 }
+\newcommand{\sectiontitlepage}{\titlepageframe{\strut}}
+\AtBeginSubsection[]{\titlepageframe{\subsecname}}
+
+% Two departures from Phase I (the user's instructions, 2026-11-15):
+%   no grey text: \src and figure labels are in the text colour;
+%   no roadmap box between parts: slide 2 is a table of contents of the \section titles.
+\renewcommand{\src}[1]{%
+  \par\vfill
+  {\fontsize{6.4}{7.6}\selectfont#1\par}
+}
+% Links, such as the entries of the contents slide, in SBU red like the frame titles
+% (hyperref's default link colour is a brighter red).
+\hypersetup{linkcolor=SBred}
 
 \begin{document}
 \begin{frame}{\phantom{Attention Factors for Statistical Arbitrage}}
@@ -169,24 +175,18 @@
 
 % --- Main slides ------------------------------------------------------------
 
+\begin{frame}{Contents}
+\tableofcontents
+\end{frame}
+
 \begin{frame}{Recap: The Paper's Roadmap}
 \claim{Train the comparison portfolios and trading policy together.}
 \strategyroadmap
 Phase I explained this model. Today we build it, feed it our own data and test it.
 \end{frame}
 
-\begin{frame}{Reproducing the Paper: Three Questions}
-\claim{Three choices come before any result.}
-\talkroadmap{0}
-Then we compare net Sharpe: 1998--2021 is the paper's sample, 2022--2025 our extension.
-\end{frame}
-
 % ============================================================================
 \section{Building the model}
-
-\begin{frame}{Building the Model}
-\talkroadmap{1}
-\end{frame}
 
 \begin{frame}{The Model in Four Steps}
 \small
@@ -211,7 +211,7 @@ F_t=A_{t-1}R_t.
 
 \claim{3. LongConv reads 30 past residuals and sets a position}\par
 \[
-s_{i,t-1}=\learn{\operatorname{LongConv}_\theta}
+s_{i,t-1}=\operatorname{LongConv}_{\learn{\theta}}
 \left(\epsilon_{i,t-30},\ldots,\epsilon_{i,t-1}\right).
 \]
 
@@ -244,16 +244,14 @@ y_{i,h}
 
 \claim{3. Mix the channels, and keep a shortcut to yesterday's residual}\par
 \[
-z_i=\learn{\operatorname{LayerNorm}}\!\Big(u_{i,\cdot,29}
-+\learn{\operatorname{Linear}}\big(\operatorname{Dropout}(\operatorname{GELU}(y_{i,\cdot}))\big)\Big).
+z_i=\operatorname{LayerNorm}_{\learn{\gamma}}\!\Big(u_{i,\cdot,29}
++\operatorname{Linear}_{\learn{\psi}}\big(\operatorname{Dropout}(\operatorname{GELU}(y_{i,\cdot}))\big)\Big).
 \]
 
 \claim{4. Read out one signed position}\par
 \[
 s_{i,t-1}=\learn{v}^{\mathsf T}z_i+\learn{b_s}.
 \]
-
-New since Phase I: GELU for ReLU, dropout, a linear layer, LayerNorm.
 \end{frame}
 
 \begin{frame}{The Objective We Train: Annualized Net Sharpe}
@@ -280,41 +278,191 @@ n_t=\underbrace{(R_t-R_{f,t})^{\mathsf T}\omega_{t-1}}_{\text{gross excess retur
 -\underbrace{0.0005\,\|\omega_{t-1}-\omega_{t-2}\|_1}_{5\ \mathrm{bp}\ \text{per traded unit}}
 -\underbrace{0.0001\sum_j(-\omega_{j,t-1})_+}_{1\ \mathrm{bp}\ \text{on short exposure}}.
 \]
-\begin{itemize}
-\item The risk-free rate $R_{f,t}$ is subtracted from every stock's return first, so $n_t$ is an excess
-      return: the book pays $R_f$ on its net position $\sum_j\omega_{j,t-1}$.
-\item New since Phase I: annualized, computed batch by batch, and $R_f$ stock by stock
-      instead of $(\overline n-R_f)$.
-\end{itemize}
+The risk-free rate $R_{f,t}$ is subtracted from every stock's return first, so $n_t$ is an excess
+return: the book pays $R_f$ on its net position $\sum_j\omega_{j,t-1}$.
 \end{frame}
 
-\begin{frame}{Why Annualized?}
-The paper prints the Sharpe ratio without a scale, next to $\lambda_{\rm Var}=100$.
 
-\medskip
-\textbf{Example:} our $K=30$ models at the end of training, on average.
+% ============================================================================
+\section{Building the data}
+\sectiontitlepage
+
+\begin{frame}{From WRDS to the Model Inputs}
+Every input is rebuilt from our own WRDS downloads:
 \begin{center}
 \small
-\begin{tabular}{@{}lrrr@{}}
+\begin{tabular}{@{}ll@{}}
 \toprule
-Scale & Sharpe term & $100\times$ explained variance & Sharpe's share\\
+Source & Used for\\
 \midrule
-Daily & $0.46$ & $37.2$ & $1\%$\\
-Annualized & $7.27$ & $37.2$ & $16\%$\\
+CRSP monthly file & Market cap: the top 500 of each month\\
+CRSP daily file & Returns, and 17 market characteristics\\
+Compustat annual accounts & 22 accounting characteristics\\
+CRSP--Compustat links & Which accounts belong to which security\\
+Fama--French factors & Risk-free rate; inputs of two characteristics\\
 \bottomrule
 \end{tabular}
 \end{center}
 \[
-7.27=\sqrt{252}\times0.46,
-\qquad
-37.2=100\times0.372.
+\text{Raw files}\longrightarrow\text{39 characteristics}\longrightarrow
+\text{Daily ranks}\longrightarrow X_{t-1}
+\]
+2,125 securities are in the top 500 at some point.
+\end{frame}
+
+\begin{frame}{Data Access: Limited to US Databases}
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Database & Paper & Us\\
+\midrule
+CRSP: securities listed in the US & Yes & Yes\\
+Compustat North America & Yes & Yes\\
+Compustat Global, Datastream & Not mentioned & No access\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item Our account has no non-US database.
+\item A firm without a US listing is out of reach: Kia, Hyundai, Samsung.
+\item The paper also takes ``the securities on CRSP'': the 109 firms it names are all in our CRSP.
+\end{itemize}
+\claim{Our data is limited to US-listed securities.}
+\end{frame}
+
+\begin{frame}{Cleaning the Data}
+\claim{1. Universe}\par
+Each month, the 500 largest NYSE, AMEX and NASDAQ equities by market cap
+at the previous month-end.
+
+\smallskip
+\claim{2. Returns}\par
+Daily returns minus the risk-free rate. Delisting returns are included.
+No filling is for the characteristics. A held stock needs a return every day:
+the 87 missing ones (trading halts, of 4.5 million stock-days) count as $0$, and the stock stays.
+
+\smallskip
+\claim{3. Timing}\par
+Row $t$ pairs $X_{t-1}$, known at the close of $t-1$, with the return $R_t$.
+Annual accounts enter 4 months after the fiscal year-end, 6 for ADRs and foreign issuers.
+
+\smallskip
+\claim{4. Risk-free rate}\par
+The monthly Fama--French rate, spread over the month's trading days.
+The daily file is rounded, and equals $0$ in whole years.
+\end{frame}
+
+\begin{frame}{Building the 39 Characteristics}
+\begin{center}
+\small
+\begin{tabular}{@{}lrll@{}}
+\toprule
+Updated & Count & Built from & Examples\\
+\midrule
+Daily & 4 & CRSP, last 5 trading days & Daily and weekly return\\
+Monthly & 13 & CRSP, monthly windows & Momentum, size, beta\\
+Yearly & 22 & Compustat accounts & Book-to-market, profitability\\
+\bottomrule
+\end{tabular}
+\end{center}
+All 39 are ranked again every day, across that day's stock list.
+
+\bigskip
+The paper takes its characteristics from Chen, Pelger and Zhu, and refers to their paper for how
+each one is built. Their replication panel holds each characteristic's values.
+\claim{We pin down the formula of each characteristic by matching that panel.}
+
+\bigskip
+All the formulas are in the backup slides.
+\end{frame}
+
+\begin{frame}{Check: Our Equations Against the Panel}
+The panel holds 35 of our 39 characteristics, all but the 4 daily ones, per stock and month up to 2016.
+\begin{center}
+\begin{tabular}{@{}lr@{}}
+\toprule
+Characteristics & Stock-months equal to the panel\\
+\midrule
+11 monthly & $98.74\%$ to $100.00\%$\\
+Resid\_Var, Beta (2016 factors) & $99.95\%$, $99.77\%$\\
+22 yearly & $99.30\%$ to $99.95\%$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\claim{Where the panel can check us, we match it.}
+\end{frame}
+
+\begin{frame}{Missing Values: The Paper Fills, We Do Not}
+\textbf{The paper:}
+\begin{quote}\small
+``Missing values in the characteristics are imputed with last observed values
+if available and by the cross-sectional median otherwise.''
+\end{quote}
+\textbf{Our rule: no filling.}
+\begin{itemize}
+\item A firm may not report a minor item, such as R\&D or advertising. That item counts as $0$, as in the panel.
+\item An essential input, such as a return, the market cap or sales, is never filled.
+      Without it the characteristic is left empty. Nothing is carried forward.
+\item No Compustat link ($0.06\%$ of stock-months): no accounts.
+\item The $n$ stocks with a value are ranked among themselves. An empty one gets $q_i=0$, the median rank.
+\[
+q_i=\frac{\operatorname{rank}(x_i)-1}{n-1}-\frac12\ \in[-0.5,\,0.5].
+\]
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Why Rank $0$ Contributes Nothing}
+\small
+Stock $i$ has 39 ranks $q_{i,j}$, and 40 common inputs $m_j$: the medians and the risk-free rate.
+Its score for factor $k$, before the softmax:
+\[
+\frac{\learn{Q_k}\,(X_i\learn{W})^{\mathsf T}}{\sqrt d}
+=\underbrace{\sum_{j=1}^{39}\learn{c_{k,j}}\,q_{i,j}}_{\text{differs across stocks}}
++\underbrace{\sum_{j=40}^{79}\learn{c_{k,j}}\,m_j}_{\text{same for every stock}},
+\quad
+\learn{c_k}=\frac{\learn{W}\learn{Q_k}^{\mathsf T}}{\sqrt d}.
 \]
 \begin{itemize}
-\item With a daily Sharpe, explained variance decides almost everything.
-\item On the validation years 1996--1997, the daily scale loses about a quarter of the net Sharpe.
+\item The score is purely linear in the ranks: no bias term, no nonlinearity.
+\item A missing characteristic has $q_{i,j}=0$: it adds $\learn{c_{k,j}}\times0=0$ to every score.
+\item The common part is the same for all stocks: the softmax cancels it.
 \end{itemize}
-\claim{We train on the annualized net Sharpe.}
+\[
+A_{k,i}
+=\frac{\exp\!\big(\sum_{j\le39}\learn{c_{k,j}}\,q_{i,j}\big)}
+       {\sum_{l=1}^{N}\exp\!\big(\sum_{j\le39}\learn{c_{k,j}}\,q_{l,j}\big)}.
+\]
+\claim{Rank $0$ adds nothing: at least, it creates no bias.}
 \end{frame}
+
+\begin{frame}{Example: A Filled Value Gets a Rank}
+\small
+\begin{center}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+ & & \multicolumn{2}{c}{Paper: last observed value} & Ours: no filling\\
+\cmidrule(lr){3-4}\cmidrule(l){5-5}
+Firm & Value today & Filled value & Rank quantile & Rank quantile\\
+\midrule
+A & $10$ & $10$ & $-0.50$ & $-0.50$\\
+B & $20$ & $20$ & $-0.25$ & $-0.17$\\
+C & $30$ & $30$ & $0.00$ & $+0.17$\\
+D & $40$ & $40$ & $+0.25$ & $+0.50$\\
+E & missing & $1000$ (3 years old) & $+0.50$ & $0$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item Filled: an old number puts E at the top, and moves its score by $0.5\,\learn{c_{k,j}}$.
+\item Filled: A to D are squeezed into $[-0.5,\,0.25]$ to make room for E.
+\item Not filled: E adds $0$, and A to D use the whole scale.
+\end{itemize}
+\claim{Filling gives E a signal it does not have and squeezes the others; no filling does neither.}
+\end{frame}
+
+% ============================================================================
+\section{Training and its settings}
+\sectiontitlepage
 
 \begin{frame}{Training: Rolling Windows and Batches}
 \textbf{Rolling window, as in the paper:}
@@ -333,32 +481,145 @@ Annualized & $7.27$ & $37.2$ & $16\%$\\
 \textbf{Inside one window:}
 \begin{itemize}
 \item An epoch is 16 batches of 126 consecutive days: 8 years.
-\item The days are consecutive because today's cost depends on yesterday's position.
-\item 30 epochs of AdamW at learning rate 0.003. No early stopping.
-\item Three seeds: $28\ \text{test years}\times3=84$ models for one dataset.
+\item A stock counts in the explained variance only with at least 21 days in the batch:
+      from fewer days, $\Var(\epsilon_i)/\Var(R_i)$ is too noisy.
 \end{itemize}
 \end{frame}
 
-\begin{frame}{What the Paper Leaves Open}
-\small
-\begin{tabular}{@{}>{\raggedright\arraybackslash}p{.36\textwidth}>{\raggedright\arraybackslash}p{.58\textwidth}@{}}\toprule
-Item & Our choice\\\midrule
-Scale of the Sharpe ratio & Annualized, $\sqrt{252}$\\[1mm]
-Batches & 126 consecutive trading days, 16 per epoch\\[1mm]
-Ridge $\lambda_{\rm ridge}$ & $10^{-4}$ in the runs reported today\\[1mm]
-Layers around LongConv & Linear encoder, GELU, dropout, linear layer, LayerNorm, linear read-out\\[1mm]
-Residual input & 30 daily residuals, in percent\\[1mm]
-Which model is kept & The last epoch: no early stopping\\[1mm]
-Seeds & 0, 1, 2\\\bottomrule
-\end{tabular}\par
-\medskip
-The published settings are kept: embedding 32, 32 channels, 30-day lookback,
-30 epochs, learning rate 0.003, dropout 0.1, weight decay 0.05, $\lambda_{\rm Var}=100$.
+\begin{frame}{The Paper's Settings Are Not Enough}
+\vfill
+\claim{The paper leaves much to tune: at its settings, our $K=30$ model nets a Sharpe ratio of $1.31$ on 1998--2021, against the paper's $2.28$.}
+\vfill
+\src{Single model, seed average, dataset D (next part): 5 bp, 30 epochs, $\lambda_{\rm ridge}=10^{-4}$.}
 \end{frame}
 
-\begin{frame}{Seed Ensemble: One Book from Three Models}
+\begin{frame}{What We Tune, What the Paper Leaves Open}
+\begin{center}
+\renewcommand{\arraystretch}{1.2}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & The paper & Our choice\\
+\midrule
+\multicolumn{3}{@{}l}{\textbf{Tunable:} the paper gives a value}\\
+Sharpe scale & $\lambda_{\rm Var}=100$ & Annualized: $\lambda_{\rm Var}\approx6.3$ in effect\\
+Training trading cost & 5 bp & 2.5, 5, 7.5, 10 bp\\
+Epochs & 30 & 20, 30, 50, 80\\
+\midrule
+\multicolumn{3}{@{}l}{\textbf{Left open:} the paper gives no value or rule}\\
+Ridge $\lambda_{\rm ridge}$ & -- & 5 values, $10^{-5}$ to $10^{-3}$\\
+Averaging over seeds & ``Averaged'' & One ensemble book\\
+No-trade band width $\delta$ & -- & 9 values, $0$ to $0.32\%$\\
+Batch size (days) & -- & 35, 49, 126, 252\\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{frame}
+
+\subsection{Tunable: the paper gives a value}
+
+\begin{frame}{Tunable: Why Annualized?}
+\textbf{The paper:} net Sharpe $+\ \lambda_{\rm Var}\times{}$explained variance, with $\lambda_{\rm Var}=100$.
+It does not say whether the Sharpe ratio is daily or annualized.
+
+\medskip
+\textbf{Annualizing is a smaller $\lambda_{\rm Var}$.} With SR the daily net Sharpe and EV the explained variance:
+\[
+\sqrt{252}\,\mathrm{SR}+100\,\mathrm{EV}=\sqrt{252}\,\big(\mathrm{SR}+6.3\,\mathrm{EV}\big),
+\qquad 6.3=100/\sqrt{252}.
+\]
+AdamW ignores the constant factor $\sqrt{252}$.
+
+\medskip
+\textbf{Why it matters.} At the end of training, the Sharpe term is $1\%$ of the daily objective
+and $16\%$ of the annualized one. With the daily scale, explained variance decides almost everything:
+on 1996--1997 the net Sharpe is about a quarter lower.
+\claim{We train on the annualized net Sharpe: in effect, $\lambda_{\rm Var}=6.3$.}
+\end{frame}
+
+\begin{frame}{Tunable: Training Cost}
+The training transaction cost $c$ is the cost per traded unit inside the objective.
+We choose $c$ among 2.5, 5, 7.5 and 10 bp in
+\[
+n_t=\text{gross excess return}-\boldsymbol{c}\,\|\omega_{t-1}-\omega_{t-2}\|_1-\text{shorting cost}.
+\]
+Results are always scored at the paper's 5 bp, whatever $c$ the model trained with.
+\claim{A higher training cost teaches the model to trade less.}
+\begin{center}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Training cost $c$ & 2.5 bp & 5 bp & 7.5 bp & 10 bp\\
+\midrule
+Turnover per day & $0.95$ & $0.66$ & $0.47$ & $0.36$\\
+Sharpe before costs & $4.33$ & $3.70$ & $3.38$ & $2.99$\\
+Net Sharpe & $0.20$ & $1.31$ & $1.72$ & $1.76$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item Less trading costs some gross return, but saves more in costs, up to about 7.5 bp.
+\end{itemize}
+\src{Single models, seed averages, 1998--2021: $K=30$, $\lambda_{\rm ridge}=10^{-4}$, 30 epochs, on dataset D (next part).}
+\end{frame}
+
+\begin{frame}{Tunable: Epochs}
+Each training window runs a fixed number of epochs, and keeps the last model.
+\claim{Neither underfit nor overfit.}
+\begin{center}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Epochs & 20 & 30 & 50\\
+\midrule
+Turnover per day & $0.62$ & $0.66$ & $0.75$\\
+Sharpe before costs & $3.66$ & $3.70$ & $3.71$\\
+Net Sharpe & $1.48$ & $1.31$ & $0.91$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item Too many: the model fits its window ever closer and trades more, for no gain before costs.
+\item Too few: the signal is not learned. On 1996--1997, 5 and 10 epochs did clearly worse.
+\end{itemize}
+\src{Single models, seed averages, 1998--2021: $K=30$, 5 bp, $\lambda_{\rm ridge}=10^{-4}$, on dataset D (next part). 5 and 10 epochs: our pilot on the validation years.}
+\end{frame}
+
+\subsection{Left open: the paper gives no value or rule}
+
+\begin{frame}{Left Open: The Ridge $\lambda_{\rm ridge}$}
+\small
+\setlength{\abovedisplayskip}{3pt}
+\setlength{\belowdisplayskip}{4pt}
+\[
+\beta^{\mathsf T}=A^{\mathsf T}\left(AA^{\mathsf T}+\lambda_{\rm ridge}I_K\right)^{-1},
+\qquad
+\epsilon_t=R_t-\beta^{\mathsf T}F_t.
+\]
+\claim{1. Stability}\par
+Two baskets that look alike make $AA^{\mathsf T}$ nearly singular. Adding $\lambda_{\rm ridge}$ keeps the inverse stable.
+
+\smallskip
+\claim{2. How much of the factors is hedged out}\par
+\textbf{Example:} one equal-weighted basket of $N=500$ stocks. Then $AA^{\mathsf T}=1/N$,
+and every stock's loading is $\beta_i=1/(1+N\lambda_{\rm ridge})$.
+\begin{center}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+$\lambda_{\rm ridge}$ & $10^{-5}$ & $10^{-4}$ & $10^{-3}$\\
+\midrule
+Share of the factor removed from each residual & $99.5\%$ & $95.2\%$ & $66.7\%$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item Small $\lambda_{\rm ridge}$: a full hedge of the factors, but a less stable inverse.
+\item Large $\lambda_{\rm ridge}$: the residuals keep part of the common movement. In our runs, market beta
+      rises from $0.03$ to $0.10$ as $\lambda_{\rm ridge}$ goes from $10^{-5}$ to $10^{-3}$.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Left Open: Averaging over Seeds}
 Three seeds give three models, and three sets of stock weights.
-\claim{Average the weights, then trade one book.}
+\claim{Our reading: average the weights every day, then trade one book.}
 \[
 \omega^{\rm ens}_{t}=\frac{\overline\omega_t}{\|\overline\omega_t\|_1},
 \qquad
@@ -381,213 +642,83 @@ Trade & $+0.3\%$ & $-0.3\%$ & $+0.3\%$ & $+0.1\%$\\
 \end{itemize}
 \end{frame}
 
-% ============================================================================
-\section{Building the data}
-
-\begin{frame}{Building the Data}
-\talkroadmap{2}
-\end{frame}
-
-\begin{frame}{From WRDS to the Model Inputs}
-Every input is rebuilt from our own WRDS downloads:
-\begin{center}
+\begin{frame}{The Model Cannot See What It Holds}
 \small
-\begin{tabular}{@{}ll@{}}
-\toprule
-Source & Used for\\
-\midrule
-CRSP monthly file & Market cap: the top 500 of each month\\
-CRSP daily file & Returns, and 17 market characteristics\\
-Compustat annual accounts & 22 accounting characteristics\\
-CRSP--Compustat links & Which accounts belong to which security\\
-Fama--French factors & Risk-free rate; inputs of two characteristics\\
-\bottomrule
-\end{tabular}
-\end{center}
-\[
-\text{Raw files}\longrightarrow\text{39 characteristics}\longrightarrow
-\text{Daily ranks}\longrightarrow X_{t-1}
-\]
-\begin{itemize}
-\item 2,125 securities are in the top 500 at some point.
-\item 4.5 million stock-days on 9,108 trading days, November 1989 to December 2025.
-\end{itemize}
-\end{frame}
-
-\begin{frame}{Data Access: Do We Miss Foreign Firms?}
-\small
-We have no non-US data. The paper uses ``the securities on CRSP'':
-\begin{center}
-\begin{tabular}{@{}lll@{}}
-\toprule
-Database & Paper & Us\\
-\midrule
-CRSP: securities listed in the US & Yes & Yes\\
-Compustat North America & Yes & Yes\\
-Compustat Global, Datastream & Not mentioned & No access\\
-\bottomrule
-\end{tabular}
-\end{center}
-Of the 109 firms named in the paper's Figures 3 and 4 (January 2021):
-\begin{itemize}
-\item All 109 are in our CRSP, and 70 are in our top 500.
-\item 16 are ADRs, which CRSP sizes by the receipts traded in the US only.
-Toyota: \$7.0 bn in CRSP, \$166 bn as a whole company in Compustat.
-\item 23 sit just below our cut: \$9.1 to \$15.5 bn, against \$15.8 bn.
-\end{itemize}
-Kia, Hyundai, Samsung: no US listing, so in neither universe.\\
-Our Compustat has accounts for $99.1\%$ of ADR stock-days (US: $99.8\%$).
-\claim{No firm is missing for lack of access. What differs is the list rule.}
-\src{CRSP caps at 2020-12-31. Compustat: shares $\times$ price at the last fiscal year-end (Toyota: March 2020).}
-\end{frame}
-
-\begin{frame}{Cleaning the Data}
-\claim{1. Universe}\par
-Each month, the 500 largest NYSE, AMEX and NASDAQ equities by market cap
-at the previous month-end.
-
-\smallskip
-\claim{2. Returns}\par
-Daily returns minus the risk-free rate. Delisting returns are included.
-A missing return counts as $0$ and the stock stays.
-
-\smallskip
-\claim{3. Timing}\par
-Row $t$ pairs $X_{t-1}$, known at the close of $t-1$, with the return $R_t$.
-Annual accounts enter 4 months after the fiscal year-end, 6 for ADRs and foreign issuers.
-
-\smallskip
-\claim{4. Risk-free rate}\par
-The monthly Fama--French rate, spread over the month's trading days.
-The daily file is rounded, and equals $0$ in whole years.
-\end{frame}
-
-\begin{frame}{Building the 39 Characteristics}
-\begin{center}
-\small
-\begin{tabular}{@{}lrll@{}}
-\toprule
-Built from & Count & Examples & Updated\\
-\midrule
-CRSP, monthly windows & 13 & Momentum, size, beta & Monthly\\
-Compustat accounts & 22 & Book-to-market, profitability & Yearly\\
-CRSP, last 5 trading days & 4 & Daily and weekly return & Daily\\
-\bottomrule
-\end{tabular}
-\end{center}
-All 39 are ranked again every day, across that day's 500 stocks.
+How the model picks today's portfolio:
+\begin{enumerate}
+\item It reads each stock's last 30 residuals and today's characteristics.
+\item From them it computes a target portfolio $\omega_t$.
+\item It holds exactly that target.
+\end{enumerate}
+Yesterday's portfolio $\omega_{t-1}$ is not an input. It appears only in the loss,
+as the cost of the change, $0.0005\,\|\omega_t-\omega_{t-1}\|_1$.
 
 \medskip
-The paper points to Chen, Pelger and Zhu for the definitions.
-Their replication panel holds the raw values, so the panel is our arbiter.
-\claim{We keep the formula that reproduces the panel, also where it differs from the written definition.}
-
-\medskip
-\textbf{Example:} \texttt{r2\_1}, short-term momentum.
-Written: last month's return. In the panel: the return of the month before last.
+\textbf{An analogy.} A driver chooses the steering angle from the map alone,
+cannot feel where the wheel is now, and is fined each time the wheel moves.
+\begin{itemize}
+\item Training teaches the driver to steer more gently overall.
+\item It cannot teach ``the wheel is already almost right: leave it'',
+      because that needs knowing where the wheel is.
+\end{itemize}
+\claim{Skipping a small trade needs the position held: the no-trade band.}
 \end{frame}
 
-\begin{frame}{Check Against the Chen--Pelger--Zhu Panel}
+\begin{frame}{Left Open: The No-Trade Band}
 \small
-The panel has 35 of our 39 characteristics, per stock and month, up to 2016.\\
-Share of common stock-months where our value equals the panel's:
+The model sets a target $\omega_{j,t}$. The band also sees the weight held, $h_{j,t-1}$.
+
+\claim{Move a position only by the part of its gap that exceeds $\delta$.}
+\[
+h_{j,t}=h_{j,t-1}+\operatorname{sign}(\Delta_{j,t})\,\max\big(|\Delta_{j,t}|-\delta,\,0\big),
+\qquad
+\Delta_{j,t}=\underbrace{\omega_{j,t}}_{\text{target}}-\underbrace{h_{j,t-1}}_{\text{held}}.
+\]
+\textbf{Example:} $\delta=0.04\%$ of the book, target $0.30\%$.
 \begin{center}
-\begin{tabular}{@{}lr@{}}
+\begin{tabular}{@{}rrrr@{}}
 \toprule
-Characteristics & Equal to the panel\\
+Held & Gap & Trade & New position\\
 \midrule
-22 accounting characteristics & $99.30\%$ to $99.95\%$\\
-5 monthly past returns & $99.68\%$ to $99.98\%$\\
-Spread, Rel2High, Variance & $99.99\%$ or more\\
-LME, LTurnover & $99.4\%$\\
-SUV & $98.74\%$\\
-Resid\_Var, Beta$^{*}$ & $99.95\%$, $99.77\%$\\
+$0.28\%$ & $0.02\%$ & none & $0.28\%$\\
+$0.20\%$ & $0.10\%$ & $0.06\%$ & $0.26\%$\\
 \bottomrule
 \end{tabular}
 \end{center}
 \begin{itemize}
-\item The 4 daily characteristics are not in the panel: we follow the paper.
-\item The panel covers $56.6\%$ of our universe in 1990--2016; almost no banks.
+\item The book is then rescaled to total absolute exposure one.
+\item No retraining: the same models, traded more slowly.
+\item At $\delta=0.04\%$, our $K=30$ ensemble trades $0.47$ a day instead of $0.62$.
 \end{itemize}
-\claim{Where the panel can check us, we match it.}
-\src{$^{*}$With the 2016 Fama--French file that the panel used. With today's file, which we use, the ranks correlate at 0.9998 and 1.0000.}
 \end{frame}
 
-\begin{frame}{Missing Values: The Paper Fills, We Do Not}
-\textbf{The paper:}
-\begin{quote}\small
-``Missing values in the characteristics are imputed with last observed values
-if available and by the cross-sectional median otherwise.''
-\end{quote}
-\textbf{Our rule: no filling.}
-\begin{itemize}
-\item Compute a characteristic only when its raw inputs are there. Otherwise leave it empty.
-\item Rank the $n$ stocks that have a value among themselves:
-\[
-q_i=\frac{\operatorname{rank}(x_i)-1}{n-1}-\frac12\ \in[-0.5,\,0.5].
-\]
-\item A stock without a value gets $q_i=0$, the median rank. Nothing is carried forward.
-\end{itemize}
-About a fifth of stock-days have no FC2Y, OP, OL or OA: mostly financial firms.
-\end{frame}
-
-\begin{frame}{Why Rank $0$ Contributes Nothing}
-\small
-Stock $i$ has 39 ranks $q_{i,j}$, and 40 common inputs $m_j$: the medians and the risk-free rate.
-Its score for factor $k$, before the softmax:
-\[
-\text{score}_{k,i}
-=\frac{\learn{Q_k}\,(X_i\learn{W})^{\mathsf T}}{\sqrt d}
-=\underbrace{\sum_{j=1}^{39}\learn{c_{k,j}}\,q_{i,j}}_{\text{differs across stocks}}
-+\underbrace{\sum_{j=40}^{79}\learn{c_{k,j}}\,m_j}_{\text{same for every stock}},
-\quad
-\learn{c_k}=\frac{\learn{W}\learn{Q_k}^{\mathsf T}}{\sqrt d}.
-\]
-\begin{itemize}
-\item The score is purely linear in the ranks: no bias term, no nonlinearity.
-\item A missing characteristic has $q_{i,j}=0$: it adds $\learn{c_{k,j}}\times0=0$ to every score.
-\item The common part is the same for all stocks: the softmax cancels it.
-\end{itemize}
-\[
-A_{k,i}
-=\frac{\exp\!\big(\sum_{j\le39}\learn{c_{k,j}}\,q_{i,j}\big)}
-       {\sum_{l=1}^{N}\exp\!\big(\sum_{j\le39}\learn{c_{k,j}}\,q_{l,j}\big)}.
-\]
-\claim{Rank $0$ adds nothing: the stock is scored on the characteristics it has.}
-\end{frame}
-
-\begin{frame}{Example: A Filled Value Gets a Rank}
-\small
-The five firms of Phase I. Today firm E has no value. Its last observed value, $1000$, is three years old.
+\begin{frame}{Left Open: Batch Size}
+An epoch covers the 8-year window with batches of consecutive days.
+Shorter batches mean more optimizer steps.
 \begin{center}
-\begin{tabular}{@{}lrrrr@{}}
+\begin{tabular}{@{}lrrrrr@{}}
 \toprule
- & & \multicolumn{2}{c}{Paper: last observed value} & Ours: no filling\\
-\cmidrule(lr){3-4}\cmidrule(l){5-5}
-Firm & Value today & Filled value & Rank quantile & Rank quantile\\
+Batch (days) & 35 & 49 & 126 & 252 & 252\\
+Epochs & 30 & 30 & 30 & 30 & 60\\
+Steps per window & 1{,}740 & 1{,}230 & 480 & 240 & 480\\
 \midrule
-A & $10$ & $10$ & $-0.50$ & $-0.50$\\
-B & $20$ & $20$ & $-0.25$ & $-0.17$\\
-C & $30$ & $30$ & $0.00$ & $+0.17$\\
-D & $40$ & $40$ & $+0.25$ & $+0.50$\\
-E & missing & $1000$ & $+0.50$ & $0$\\
+Turnover per day & $0.72$ & $0.71$ & $0.66$ & $0.60$ & $0.76$\\
+Net Sharpe, 1996--1997 & $6.58$ & $6.86$ & $7.19$ & $6.76$ & $7.12$\\
+Net Sharpe, 1998--2021 & $1.03$ & $1.13$ & $1.36$ & $1.43$ & $1.02$\\
 \bottomrule
 \end{tabular}
 \end{center}
 \begin{itemize}
-\item Filled: an old number puts E at the top, and moves its score by $0.5\,\learn{c_{k,j}}$.
-\item Filled: A to D are squeezed into $[-0.5,\,0.25]$ to make room for E.
-\item Not filled: E adds $0$, and A to D use the whole scale.
+\item More steps, or longer batches at the same steps, fit the window closer: the model trades more.
+\item 126 days, our choice, does best on the validation years 1996--1997.
 \end{itemize}
-\claim{Filling turns a missing value into a signal the model trades on: a bias.}
+\claim{Batch size acts through how closely the model fits its window.}
+\src{Our first runs, on the first data build: $K=8$, plain list, 30-day wait, $\lambda_{\rm ridge}=10^{-5}$, 5 bp; single models, seed averages.}
 \end{frame}
 
 % ============================================================================
 \section{Choosing the top 500}
-
-\begin{frame}{Choosing the Top 500}
-\talkroadmap{3}
-\end{frame}
+\sectiontitlepage
 
 \begin{frame}{Top 500 Stocks, or Top 500 Companies?}
 The paper takes the 500 largest \emph{stocks}. A company can then be on the list twice:
@@ -652,7 +783,7 @@ The paper trades the 500 largest stocks by last month's market cap.
 \medskip
 LongConv needs 30 past residuals for every stock it trades:
 \[
-s_{i,t-1}=\learn{\operatorname{LongConv}_\theta}
+s_{i,t-1}=\operatorname{LongConv}_{\learn{\theta}}
 (\underbrace{\epsilon_{i,t-30},\ldots,\epsilon_{i,t-1}}_{\text{computed inside the list}}).
 \]
 \claim{A new name has no residual history inside the list. Two choices follow.}
@@ -666,12 +797,12 @@ s_{i,t-1}=\learn{\operatorname{LongConv}_\theta}
   \draw[-{Stealth[length=2mm]},draw=gray] (22,0) -- (109,0);
   \draw[draw=gray,dashed] (50,0) -- (50,22);
   \draw[draw=gray,dashed] (78,0) -- (78,22);
-  \node[below,text=Muted] at (50,0) {the name enters the list};
-  \node[below,text=Muted] at (78,0) {30 days later};
+  \node[below] at (50,0) {the name enters the list};
+  \node[below] at (78,0) {30 days later};
   % 30-day wait
   \node[anchor=east,font=\scriptsize\bfseries] at (21,16) {30-day wait};
   \draw[draw=gray!50,fill=gray!12] (50,13) rectangle (78,19);
-  \node[text=gray!70!black] at (64,16) {no signal};
+  \node at (64,16) {no signal};
   \draw[draw=SBred,fill=SBred!10,thick] (78,13) rectangle (106,19);
   \node[text=SBred,font=\scriptsize\bfseries] at (92,16) {signal};
   % rebuilt history
@@ -710,7 +841,7 @@ also for the days before the name entered.
   \draw[draw=AttentionBlue,fill=AttentionBlue!8,thick] (58,0) rectangle (82,6);
   \node[text=AttentionBlue,font=\scriptsize\bfseries] at (70,3) {501--600};
   \draw[draw=gray!50,fill=gray!12] (82,0) rectangle (106,6);
-  \node[text=gray!70!black] at (94,3) {above 600};
+  \node at (94,3) {above 600};
   \node[below] at (29,0) {every name is on the list};
   \node[below] at (70,0) {members stay};
   \node[below] at (94,0) {members leave};
@@ -792,6 +923,7 @@ Paper, $K=30$ & 500 largest & $2.28$ & --\\
 
 % ============================================================================
 \section{The best fixed setting}
+\sectiontitlepage
 
 \begin{frame}{The Scan: The Best Fixed Setting for D}
 D is our dataset: buffered list, rebuilt 30-day history.
@@ -814,92 +946,7 @@ Band width $\delta$ & After training & 9 values, $0$ to $0.32\%$ of the book\\
 \item Best: the highest net Sharpe on 1996--1997, the last two years of the first training window, as in the paper.
 \item The ensemble is always on: three seeds, and we can add more.
 \end{itemize}
-\claim{One setting for each $K$, chosen before the test years.}
-\end{frame}
-
-\begin{frame}{The Role of $\lambda_{\rm ridge}$}
-\small
-\setlength{\abovedisplayskip}{3pt}
-\setlength{\belowdisplayskip}{4pt}
-\[
-\beta^{\mathsf T}=A^{\mathsf T}\left(AA^{\mathsf T}+\lambda_{\rm ridge}I_K\right)^{-1},
-\qquad
-\epsilon_t=R_t-\beta^{\mathsf T}F_t.
-\]
-\claim{1. Stability}\par
-Two baskets that look alike make $AA^{\mathsf T}$ nearly singular. Adding $\lambda_{\rm ridge}$ keeps the inverse stable.
-
-\smallskip
-\claim{2. How much of the factors is hedged out}\par
-\textbf{Example:} one equal-weighted basket of $N=500$ stocks. Then $AA^{\mathsf T}=1/N$,
-and every stock's loading is $\beta_i=1/(1+N\lambda_{\rm ridge})$.
-\begin{center}
-\begin{tabular}{@{}lrrr@{}}
-\toprule
-$\lambda_{\rm ridge}$ & $10^{-5}$ & $10^{-4}$ & $10^{-3}$\\
-\midrule
-Share of the factor removed from each residual & $99.5\%$ & $95.2\%$ & $66.7\%$\\
-\bottomrule
-\end{tabular}
-\end{center}
-\begin{itemize}
-\item Small $\lambda_{\rm ridge}$: a full hedge of the factors, but a less stable inverse.
-\item Large $\lambda_{\rm ridge}$: the residuals keep part of the common movement. In our runs, market beta
-      rises from $0.03$ to $0.10$ as $\lambda_{\rm ridge}$ goes from $10^{-5}$ to $10^{-3}$.
-\end{itemize}
-\end{frame}
-
-\begin{frame}{Training Cost and Epochs}
-\claim{1. Training cost: teach the model to trade less}\par
-The cost $c$ inside the objective is a lever: 2.5, 5, 7.5 or 10 bp.
-Results are always scored at the paper's 5 bp.
-\[
-n_t=\text{gross excess return}-c\,\|\omega_{t-1}-\omega_{t-2}\|_1-\text{shorting cost}.
-\]
-Trained at 7.5 bp instead of 5 bp, a $K=30$ model trades $0.48$ of its book a day instead of $0.67$.
-
-\medskip
-\claim{2. Epochs: neither underfit nor overfit}\par
-\begin{center}
-\small
-\begin{tabular}{@{}lrrrr@{}}
-\toprule
-Epochs & 10 & 20 & 30 & 60\\
-\midrule
-Turnover per day in the test years & $0.53$ & $0.58$ & $0.66$ & $0.85$\\
-\bottomrule
-\end{tabular}
-\end{center}
-Too few epochs: the signal is not learned. Too many: the model fits its window and trades more.
-\src{Turnover: single models from our earlier runs on the plain list, 1998--2021 ($K=30$ for the cost, $K=8$ for the epochs).}
-\end{frame}
-
-\begin{frame}{After Training: The No-Trade Band}
-\small
-The model gives a target weight $\omega_{j,t}$ every day. Following every small change costs 5 bp per unit traded.
-
-\claim{Move a position only by the part of its gap that exceeds $\delta$.}
-\[
-h_{j,t}=h_{j,t-1}+\operatorname{sign}(\Delta_{j,t})\,\max\big(|\Delta_{j,t}|-\delta,\,0\big),
-\qquad
-\Delta_{j,t}=\underbrace{\omega_{j,t}}_{\text{target}}-\underbrace{h_{j,t-1}}_{\text{held}}.
-\]
-\textbf{Example:} $\delta=0.04\%$ of the book, target $0.30\%$.
-\begin{center}
-\begin{tabular}{@{}rrrr@{}}
-\toprule
-Held & Gap & Trade & New position\\
-\midrule
-$0.28\%$ & $0.02\%$ & none & $0.28\%$\\
-$0.20\%$ & $0.10\%$ & $0.06\%$ & $0.26\%$\\
-\bottomrule
-\end{tabular}
-\end{center}
-\begin{itemize}
-\item The book is then rescaled to total absolute exposure one.
-\item No retraining: the same models, traded more slowly.
-\item On dataset D, $\delta=0.04\%$ cuts turnover from $0.62$ to $0.47$ a day.
-\end{itemize}
+\claim{One setting for each $K$, chosen before the test years 1998--2025.}
 \end{frame}
 
 \begin{frame}{What We Scanned}
@@ -912,13 +959,13 @@ The one with the best net Sharpe of the ensemble with the band is that $K$'s set
 Each $K$ trained at its own setting: three seeds, retrained every year.
 
 \medskip
-\claim{3. The grid on the test years, for $K=8$, $30$ and $100$}\par
+\claim{3. The grid on 1998--2025, for $K=8$, $30$ and $100$}\par
 28 training settings $\times$ 9 band widths at $K=8$ and $30$; at $K=100$, 3~costs $\times$ 3~ridges at 30 epochs.
 To see how each lever acts: nothing is chosen from it.
 
 \medskip
 {\small The 32 training settings: 4 costs $\times$ 5 ridges at 30 epochs, plus 20, 50 and 80 epochs
-at $\lambda_{\rm ridge}=10^{-4}$ for each cost. The grid on the test years leaves out 80 epochs.\par}
+at $\lambda_{\rm ridge}=10^{-4}$ for each cost. The grid on 1998--2025 leaves out 80 epochs.\par}
 \end{frame}
 
 \begin{frame}{Results of the Scan}
@@ -952,26 +999,26 @@ $K=100$ & 7.5 bp, $3\cdot10^{-4}$, 30 & $0.02\%$ & $2.19$ & $2.08$ & $+0.25$\\
 
 \begin{frame}{What the Whole Grid Shows}
 \small
-At $K=8$ and $30$ every training setting also ran on the test years; at $K=100$, 3~costs $\times$ 3~ridges at 30 epochs:
+Ensemble with the band; at $K=100$ the grid is 3~costs $\times$ 3~ridges:
 \begin{center}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{@{}lrrrrr@{}}
 \toprule
- & Paper & \multicolumn{2}{c}{Chosen on 1996--1997} & \multicolumn{2}{c}{Best in hindsight}\\
+ & Paper & \multicolumn{2}{c}{Chosen on 1996--1997} & \multicolumn{2}{c}{Chosen on 1998--2021}\\
 \cmidrule(lr){3-4}\cmidrule(l){5-6}
 Net Sharpe & 1998--2021 & 1998--2021 & 2022--2025 & 1998--2021 & 2022--2025\\
 \midrule
 $K=8$ & $1.94$ & $1.29$ & $-1.17$ & $2.22$ & $-0.40$\\
 $K=30$ & $2.28$ & $2.09$ & $-0.18$ & $2.28$ & $+0.13$\\
-$K=100$ & $2.19$ & $2.08$ & $+0.25$ & XX & XX\\
+$K=100$ & $2.19$ & $2.08$ & $+0.25$ & $2.26$ & $+0.35$\\
 \bottomrule
 \end{tabular}
 \end{center}
-Best in hindsight at $K=8$ and $30$: 5 bp, $\lambda_{\rm ridge}=10^{-4}$, 30 epochs, band $0.12\%$; at $K=100$: XX.
-Picked on the years it is scored on: an upper bound, not a result.
+Chosen on 1998--2021, all at 30 epochs: 5 bp, $\lambda_{\rm ridge}=10^{-4}$, band $0.12\%$ at $K=8$ and $30$;
+10 bp, $3\cdot10^{-4}$, band $0.04\%$ at $K=100$.
+An upper bound: scored on the years it is chosen on. 2022--2025 is out of sample for both.
 
-\smallskip
-At $K=8$ the validation years reward long training; the test years do not:
+At $K=8$, 1996--1997 rewards long training; 1998--2021 does not:
 \begin{center}
 \begin{tabular}{@{}lrrrr@{}}
 \toprule
@@ -982,9 +1029,13 @@ Net Sharpe, 1998--2021 & $2.02$ & $\mathbf{2.12}$ & $1.88$ & $1.29$\\
 \bottomrule
 \end{tabular}
 \end{center}
-\claim{The grid reaches the paper; two validation years miss it at $K=8$.}
-\src{Ensemble with the band throughout; the band is chosen on 1996--1997, except in hindsight.}
+\claim{The grid reaches the paper; choosing on 1996--1997 misses it at $K=8$.}
+\src{The band is chosen with the rest of the setting: on 1996--1997, or on 1998--2021 in the last two columns.}
 \end{frame}
+
+% ============================================================================
+\section{Conclusions and next steps}
+\sectiontitlepage
 
 \begin{frame}{Conclusions and Next Steps}
 \small
@@ -1002,6 +1053,7 @@ Net Sharpe, 1998--2021 & $2.02$ & $\mathbf{2.12}$ & $1.88$ & $1.29$\\
 \textbf{Next:}
 \begin{itemize}
 \item $K=5$ to $15$: a fixed setting that holds beyond 1996--1997.
+\item Explore the role of $\lambda_{\rm Var}$: annualizing set it, in effect, to $6.3$.
 \item More seeds in the ensemble.
 \item Where the remaining gap to the paper comes from.
 \end{itemize}
@@ -1045,6 +1097,190 @@ Costs: trading / shorting & 5 bp / 1 bp\\
 Seeds & 0, 1, 2, as one ensemble\\
 Validation / test / extension & 1996--1997 / 1998--2021 / 2022--2025\\\bottomrule
 \end{tabular}\par
+\end{frame}
+
+% The formulas of the 39 characteristics and the risk-free rate, as built (the user's request, 2026-11-15).
+% Sources: analysis/characteristics/market.md section 3, accounting.md section 3, training_data.md section 4.
+\newcommand{\ch}[1]{\texttt{#1}}            % a characteristic
+\newcommand{\cz}[1]{\mathrm{#1}^{*}}        % a Compustat item that counts as 0 when missing
+
+\begin{frame}{Formulas: Daily Characteristics and $r_f$}
+\small
+Row $t$ holds what is known at the close of day $t-1$. $R_{i,d}$ is the return of stock $i$ on day $d$,
+and $V_{i,d}$ its shares traded. All five days must have data.
+\begin{center}
+\renewcommand{\arraystretch}{1.7}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ch{Ret\_D1} & $R_{i,t-1}$\\
+\ch{Ret\_W1} & $\prod_{d=t-5}^{t-1}(1+R_{i,d})-1$\\
+\ch{STD\_W1} & $\Big(\frac14\sum_{d=t-5}^{t-1}\big(R_{i,d}-\bar R_i\big)^2\Big)^{1/2}$,
+               \quad $\bar R_i=\frac15\sum_{d=t-5}^{t-1}R_{i,d}$\\
+\ch{Vol} & $\sum_{d=t-5}^{t-1}V_{i,d}$\\
+\midrule
+Risk-free rate & $r_{f,d}=(1+r_{f,m})^{1/n_m}-1$, the same for every stock\\
+\bottomrule
+\end{tabular}
+\end{center}
+$r_{f,m}$ is the Fama--French rate of day $d$'s month $m$, and $n_m$ the number of trading days
+that month was scheduled to have. Row $t$ holds $r_{f,t-1}$.
+
+\medskip
+A stock's 79 inputs: its 39 ranks, the 39 cross-sectional medians, and $r_{f,t-1}$.
+\end{frame}
+
+\begin{frame}{Formulas: Monthly, Past Returns}
+\small
+$f$ is the formation month, the month before the holding month. $R_{i,m}$ is the return of month $m$,
+as in CRSP's legacy monthly file, where a dividend is not reinvested within the month:
+\[
+R_{i,m}=\prod_{d\in m}(1+x_{i,d})-1+\sum_{d\in m}y_{i,d}\prod_{s\in m,\ s<d}(1+x_{i,s}),
+\]
+with $x_{i,d}$ the day's price return and $y_{i,d}$ its dividend yield.
+\begin{center}
+\renewcommand{\arraystretch}{1.6}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ch{ST\_Rev} & $R_{i,f}$\\
+\ch{r2\_1} & $R_{i,f-1}$\\
+\ch{r12\_2} & $\prod_{m=f-11}^{f-1}(1+R_{i,m})-1$\\
+\ch{r12\_7} & $\prod_{m=f-11}^{f-6}(1+R_{i,m})-1$\\
+\ch{r36\_13} & $\prod_{m=f-35}^{f-12}(1+R_{i,m})-1$\\
+\bottomrule
+\end{tabular}
+\end{center}
+Every month of a window must have a return.
+\end{frame}
+
+\begin{frame}{Formulas: Monthly, Trading Frictions (1/2)}
+\small
+Sums run over the trading days $d$ of the months named, and $n$ is their number.
+\begin{center}
+\renewcommand{\arraystretch}{1.6}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ch{LME} & $P_{i,f}\,S_{i,f}$, in \$ million\\
+\ch{LTurnover} & $\operatorname{round}(V_{i,f}/100)\,\big/\,(S_{i,f}/1000)$\\
+\ch{Rel2High} & $\tilde P_{i,f}\,\big/\max_{d\in f-11,\dots,f}\tilde P_{i,d}$\\
+\ch{Spread} & $\frac1n\sum_{d\in f}\frac{H_{i,d}-L_{i,d}}{(H_{i,d}+L_{i,d})/2}$\\
+\ch{Variance} & $\frac1{n-1}\sum_{d\in f-1,\,f}\big(R_{i,d}-\bar R_i\big)^2$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item $P_{i,f}$: last price of month $f$. $S_{i,f}$: shares outstanding at its end. $V_{i,f}$: shares traded in it.
+\item $\tilde P_{i,d}$: split-adjusted close. $H$, $L$: the day's high and low; ask and bid on a day without a trade.
+\item LTurnover keeps the units of CRSP's legacy file: volume in hundreds, shares in thousands.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Formulas: Monthly, Trading Frictions (2/2)}
+\small
+\setlength{\abovedisplayskip}{3pt}
+\setlength{\belowdisplayskip}{3pt}
+\ch{Resid\_Var}$_i=\frac{1}{n-1}\sum_d\hat e_{i,d}^{\,2}$, from a fit on the $n$ days of months $f-1$ and $f$, at least 20:
+\[
+R_{i,d}-r_{f,d}=a_i+b_i\,\mathrm{MKT}_d+c_i\,\mathrm{SMB}_d+g_i\,\mathrm{HML}_d+e_{i,d}.
+\]
+\ch{SUV}$_i=\frac{1}{n_f}\sum_{d\in f}\big(V_{i,d}-\hat V_{i,d}\big)/\hat s_i$ over the $n_f$ days of $f$,
+from a fit on the $n_0$ days of months $f-2$ and $f-1$, at least 5:
+\[
+V_{i,d}=a_i+b_i\,(R_{i,d})^{+}+c_i\,(-R_{i,d})^{+}+u_{i,d},
+\qquad
+\hat s_i^{\,2}=\frac{1}{n_0-1}\sum_d\hat u_{i,d}^{\,2}.
+\]
+\ch{Beta} $=\rho_i\,\sigma_i/\sigma_M$, as in Frazzini and Pedersen:
+\begin{itemize}
+\item $\sigma_i$: standard deviation of $\ln(1+R_{i,d})$ over months $f-11,\dots,f$, at least 120 days.
+\item $\sigma_M$: standard deviation of $\ln(1+\mathrm{MKT}_d)$ over every trading day of those months.
+\item $\rho_i$: correlation over months $f-59,\dots,f$ of sums over 3 consecutive observations of
+      $\ln(1+R_{i,d}-r_{f,d})$ and of $\ln(1+\mathrm{MKT}_d)$ on the same days, at least 750 sums.
+\end{itemize}
+\src{MKT, SMB, HML: the Fama--French daily factors; MKT is the market's return in excess of $r_f$. $V_{i,d}$: shares traded. $x^{+}=\max(x,0)$.}
+\end{frame}
+
+\begin{frame}{Formulas: Yearly, Total Assets and Value}
+\small
+\setlength{\abovedisplayskip}{3pt}
+\setlength{\belowdisplayskip}{3pt}
+Compustat items of the fiscal year in use, $\tau$; a subscript $\tau-1$ marks the year before.
+ME is the stock's market cap at the end of December of year $\tau$.
+Items marked $^{*}$ count as $0$ when missing; the others are essential.
+\[
+\mathrm{BE}=\mathrm{SEQ}-\cz{PS}+\cz{TXDITC},
+\quad
+\mathrm{PS}=\mathrm{PSTKRV},\ \text{else}\ \mathrm{PSTKL},\ \text{else}\ \mathrm{PSTK}.
+\]
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ch{AT} & $\mathrm{AT}$\\
+\ch{A2ME} & $\mathrm{AT}/\mathrm{ME}$\\
+\ch{BEME} & $\mathrm{BE}/\mathrm{ME}$\\
+\ch{C} & $\mathrm{CHE}/\mathrm{AT}$\\
+\ch{CF} & $(\mathrm{NI}+\mathrm{DP}-\cz{WCAPCH}-\cz{CAPX})/\mathrm{BE}$\\
+\ch{CF2P} & $(\mathrm{IB}+\mathrm{DP}+\cz{TXDB})/\mathrm{ME}$\\
+\ch{Q} & $(\mathrm{AT}+\mathrm{CSHO}\times\mathrm{PRCC\_F}-\mathrm{CEQ}-\cz{TXDB})/\mathrm{AT}$\\
+\ch{Lev} & $(\cz{DLTT}+\cz{DLC})/(\cz{DLTT}+\cz{DLC}+\mathrm{SEQ})$\\
+\ch{E2P} & $\mathrm{IB}/\mathrm{ME}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\src{TXDITC is added only up to fiscal year 1992. SEQ is never missing in our universe.
+AT total assets; SEQ shareholders' equity; CEQ common equity; PSTKRV, PSTKL, PSTK preferred stock at redemption, liquidating and par value;
+TXDITC deferred taxes and investment tax credit; CHE cash and short-term investments; NI net income; DP depreciation and amortization;
+WCAPCH change in working capital; CAPX capital expenditures; IB income before extraordinary items; TXDB deferred taxes;
+CSHO shares outstanding; PRCC\_F price at the fiscal year-end; DLTT long-term debt; DLC debt in current liabilities.}
+\end{frame}
+
+\begin{frame}{Formulas: Yearly, Profitability}
+\small
+Notation as on the previous slide. Net operating assets:
+\begingroup\footnotesize
+\[
+\mathrm{NOA}^{\rm raw}=(\mathrm{AT}-\mathrm{CHE}-\cz{IVAO})-(\mathrm{AT}-\cz{DLC}-\cz{DLTT}-\cz{MIB}-\cz{PSTK}-\mathrm{CEQ}).
+\]
+\endgroup
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ch{PROF} & $(\mathrm{REVT}-\mathrm{COGS})/\mathrm{BE}$\\
+\ch{CTO} & $\mathrm{SALE}/\mathrm{AT}_{\tau-1}$\\
+\ch{FC2Y} & $(\mathrm{XSGA}+\cz{XRD}+\cz{XAD})/\mathrm{SALE}$\\
+\ch{OP} & $(\mathrm{REVT}-\mathrm{COGS}-\cz{TIE}-\mathrm{XSGA})/\mathrm{BE}$\\
+\ch{PM} & $\mathrm{OIADP}/\mathrm{SALE}$\\
+\ch{RNA} & $\mathrm{OIADP}/\mathrm{NOA}^{\rm raw}_{\tau-1}$\\
+\ch{D2A} & $\mathrm{DP}/\mathrm{AT}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\src{REVT revenue; COGS cost of goods sold; SALE net sales; XSGA selling, general and administrative expense;
+XRD research and development expense; XAD advertising expense; TIE total interest expense, reported by financial firms;
+OIADP operating income after depreciation; IVAO other investments and advances; MIB minority interest.}
+\end{frame}
+
+\begin{frame}{Formulas: Yearly, Investment and Intangibles}
+\small
+Notation as before; $\Delta$ is the change from $\tau-1$ to $\tau$. Working capital:
+\[
+\mathrm{WC}=\mathrm{ACT}-\mathrm{CHE}-\mathrm{LCT}-\cz{DLC}-\cz{TXP}-\mathrm{DP}.
+\]
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ch{Investment} & $\mathrm{AT}/\mathrm{AT}_{\tau-1}-1$\\
+\ch{NOA} & $\mathrm{NOA}^{\rm raw}/\mathrm{AT}_{\tau-1}$\\
+\ch{DPI2A} & $(\Delta\mathrm{PPEGT}+\Delta\cz{INVT})/\mathrm{AT}_{\tau-1}$\\
+\midrule
+\ch{OA} & $(\mathrm{WC}-\mathrm{WC}_{\tau-1})/\mathrm{AT}_{\tau-1}$\\
+\ch{OL} & $(\mathrm{COGS}+\mathrm{XSGA})/\mathrm{AT}$\\
+\ch{PCM} & $(\mathrm{SALE}-\mathrm{COGS})/\mathrm{SALE}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\src{ACT current assets; LCT current liabilities; TXP income taxes payable; PPEGT gross property, plant and equipment; INVT inventories.}
 \end{frame}
 
 \begin{frame}{Where the Panel Overrides the Written Definition}

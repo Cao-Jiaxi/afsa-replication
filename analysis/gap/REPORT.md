@@ -156,7 +156,7 @@ $ext = foreach ($c in "2.5", "5", "7.5", "10") { "$c/1e-4/80" }                 
 .venv\Scripts\python.exe analysis\gap\selection.py --K 8 30 --only $grid --set $set --baseline 5/1e-4/30 --out analysis\gap\SCAN_BUFFER_GRID.md
 $k100 = foreach ($c in "5", "7.5", "10") { foreach ($r in "1e-4", "3e-4", "1e-3") { "$c/$r/30" } }   # stage 2 at K = 100 (added after stage 3): the 3 x 3 block
 .venv\Scripts\python.exe analysis\gap\scan.py train --K 100 --only $k100 --set $set --periods test holdout --max-models 12   # about 1 h; then `weights` (no --max-models)
-.venv\Scripts\python.exe analysis\gap\selection.py --K 100 --only $k100 --set $set --baseline 5/1e-4/30 --out analysis\gap\SCAN_BUFFER_GRID_K100.md
+.venv\Scripts\python.exe analysis\gap\selection.py --K 8 30 100 --only $k100 --set $set --baseline 5/1e-4/30 --out analysis\gap\SCAN_BUFFER_BLOCK.md   # the block at all three K
 .venv\Scripts\python.exe analysis\gap\pilot.py --best --K 1 3 5 8 15 30 100 --only $grid $ext --set $set  # stage 3: each K's choice; its last line is $pairs
 $pairs = "1=10/1e-4/80", "3=7.5/1e-4/80", "5=5/1e-4/80", "8=5/1e-4/80", "15=2.5/1e-4/50", "30=5/3e-4/30", "100=7.5/3e-4/30"
 foreach ($p in $pairs) { $K, $s = $p -split "="; foreach ($a in "train", "weights") { .venv\Scripts\python.exe analysis\gap\scan.py $a --K $K --only $s --set $set --periods test holdout } }
@@ -489,11 +489,12 @@ That is 28 settings per K. The pilot's runs are the validation years of 24 of th
 
 ### 10.7 A scan on the buffered list with rebuilt history (dataset D), each K at its own setting
 
-Run on 2026-11-15 at Jesse's request, on D of the 2×2 (`--universe wrds_broad_buffer600 --fill none --entry_rule history`; NOTES.md §9), seeds 0–2. The design was written into CLAUDE.md §7 before any of its test years ran. Tables: [PILOT_BUFFER.md](PILOT_BUFFER.md) (validation years, every K), [SCAN_BUFFER_GRID.md](SCAN_BUFFER_GRID.md) (the grid on the test years, K = 8 and 30) and [SCAN_BUFFER.md](SCAN_BUFFER.md) (each K at its own setting).
+Run on 2026-11-15 at Jesse's request, on D of the 2×2 (`--universe wrds_broad_buffer600 --fill none --entry_rule history`; NOTES.md §9), seeds 0–2. The design was written into CLAUDE.md §7 before any of its test years ran. Tables: [PILOT_BUFFER.md](PILOT_BUFFER.md) (validation years, every K), [SCAN_BUFFER_GRID.md](SCAN_BUFFER_GRID.md) (the grid on the test years, K = 8 and 30), [SCAN_BUFFER_BLOCK.md](SCAN_BUFFER_BLOCK.md) (a 3 × 3 block of costs and ridges on the test years, K = 8, 30 and 100) and [SCAN_BUFFER.md](SCAN_BUFFER.md) (each K at its own setting).
 
 - **Grid:** section 10.6's proposal, 28 settings. Training cost 2.5, 5, 7.5 and 10 bp × ridge 1e-5, 3e-5, 1e-4, 3e-4 and 1e-3 at 30 epochs, plus 20 and 50 epochs at ridge 1e-4 with each cost; the 9 band widths on every seed ensemble.
 - **Stage 1, validation years only** (1996–1997). First K = 8, 30 and 100. The best layer at K = 8 sat at 50 epochs, the edge, so 80 epochs at ridge 1e-4 with each cost was added (32 settings). Then K = 1, 3, 5 and 15, for stage 3. In all, 224 runs (1,344 models: 3 seeds × 2 validation years each) in about an hour.
 - **Stage 2, test and holdout years** (1998–2025), K = 8 and 30, the 28 settings: 4,704 models in 2 h 9 min. A description of the grid on the test years; it sets nothing.
+    - Added after stage 3 at Jesse's request: K = 100 on 3 training costs × 3 ridges at 30 epochs (5, 7.5 and 10 bp × 1e-4, 3e-4 and 1e-3), 672 new models in about 70 minutes; the ninth setting is stage 3's. The block surrounds K = 100's validation choice (7.5 bp, 3e-4) and was chosen on 1996–1997: outside it the model is clearly worse in 10 of the 11 cost × ridge cells of `PILOT_BUFFER.md`, inside it in 3 of 9.
 - **Stage 3:** every K trains at its own validation choice for the ensemble + band, among the 32 settings (`pilot.py --best`). Jesse chose this after stage 1 showed that the best training length depends on K: one setting for all K, the paper's convention, would cost some K 0.3–1.0 of validation net SR. Each rule then chooses the band width for each K, and K and band width together (63 candidates).
 
 **Stage 1.** Net SR on the validation years. *Reference*: 5 bp, ridge 1e-4, 30 epochs, the 2×2's setting. † clearly worse than the best layer.
@@ -515,17 +516,19 @@ Run on 2026-11-15 at Jesse's request, on D of the 2×2 (`--universe wrds_broad_b
 
 **Stage 2.** Net SR, 1998–2021 (setting chosen, or band):
 
-| | K = 8 | K = 30 |
-| --- | --- | --- |
-| Paper (model) | 1.94 | 2.28 |
-| Model, reference setting | 1.52 | 1.31 |
-| Model, validation | 1.52 (7.5 bp, 1e-4, 50 ep) | 1.72 (7.5 bp, 1e-4, 30 ep) |
-| Model, one setting for both K, validation | 1.73 (7.5 bp, 1e-4, 30 ep) | 1.72 (the same) |
-| Model, hindsight | 1.75 (7.5 bp, 3e-4, 30 ep) | 1.82 (10 bp, 3e-4, 30 ep) |
-| Ensemble + band, reference setting (band from validation) | 2.12 (4e-4) | 2.08 (4e-4) |
-| Ensemble + band, validation | 1.88 (5 bp, 1e-4, 50 ep; 4e-4) | 2.09 (5 bp, 3e-4, 30 ep; 4e-4) |
-| Ensemble + band, walk-forward (252 candidates) | 1.99 (13 switches) | 1.93 (17 switches) |
-| Ensemble + band, hindsight | 2.22 (reference setting; 1.2e-3) | 2.28 (reference setting; 1.2e-3) |
+| | K = 8 | K = 30 | K = 100 (3 × 3 block, 30 ep) |
+| --- | --- | --- | --- |
+| Paper (model) | 1.94 | 2.28 | 2.19 |
+| Model, reference setting | 1.52 | 1.31 | 0.77 |
+| Model, validation | 1.52 (7.5 bp, 1e-4, 50 ep) | 1.72 (7.5 bp, 1e-4, 30 ep) | 1.44 (7.5 bp, 3e-4) |
+| Model, one setting for both K, validation | 1.73 (7.5 bp, 1e-4, 30 ep) | 1.72 (the same) | – |
+| Model, hindsight | 1.75 (7.5 bp, 3e-4, 30 ep) | 1.82 (10 bp, 3e-4, 30 ep) | 1.57 (10 bp, 3e-4) |
+| Ensemble + band, reference setting (band from validation) | 2.12 (4e-4) | 2.08 (4e-4) | 1.81 (4e-4) |
+| Ensemble + band, validation | 1.88 (5 bp, 1e-4, 50 ep; 4e-4) | 2.09 (5 bp, 3e-4, 30 ep; 4e-4) | 2.08 (7.5 bp, 3e-4; 2e-4) |
+| Ensemble + band, walk-forward (252 candidates; K = 100: 81) | 1.99 (13 switches) | 1.93 (17 switches) | 2.04 (9 switches) |
+| Ensemble + band, hindsight | 2.22 (reference setting; 1.2e-3) | 2.28 (reference setting; 1.2e-3) | 2.26 (10 bp, 3e-4; 4e-4) |
+
+The block holds both hindsight choices of K = 8 and 30, so on it their hindsight rows are the same (`SCAN_BUFFER_BLOCK.md`). Their validation choices differ there only at K = 8, where the block has no 50-epoch setting: the layer's becomes 5 bp, 1e-4, 30 epochs with a band of 4e-4, 2.12 against 1.88.
 
 1. **With one setting for both K, validation picks section 10.2's setting** (7.5 bp, ridge 1e-4, 30 epochs): +0.23 [+0.11, +0.36] and +0.42 [+0.28, +0.56] over the reference model. Chosen per K, it gains nothing at K = 8 (50 epochs: +0.03 [−0.09, +0.16]).
 2. **The test years do not reward longer training at low training costs.** At 5 bp the model's net SR falls from 30 to 50 epochs at both K (1.52 → 1.12 at K = 8; 1.31 → 0.91 at K = 30), as turnover rises (0.64 → 0.80; 0.66 → 0.75). At K = 8 the layer is best at 20 or 30 epochs at every cost, never at 50. The validation years ranked the other way (layer at K = 8, 5 bp: 9.15 at 30 epochs, 9.88 at 50, 10.10 at 80). Stage 3 trains K = 1–8 at 80 epochs, so it carries this risk.
@@ -533,6 +536,13 @@ Run on 2026-11-15 at Jesse's request, on D of the 2×2 (`--universe wrds_broad_b
 4. **Walk-forward over all 252 candidates switches 13–17 times** and does no better than validation at K = 30. Stage 3 walks forward over the band width (and K) only.
 5. **The model's hindsight best is not distinguishable from luck at K = 8** (reality check p = 0.17); at K = 30 it is (p < 0.001).
 6. **2022–2025:** every chosen model loses less than the reference (−0.74 / −0.34 at K = 8 / 30); the ensemble + band gets −0.57 / −0.18 by validation and −0.40 / +0.13 walk-forward.
+7. **K = 100 needs a higher training cost.**
+    - At 5 bp its models trade 0.68–0.72 a day and net 0.77–1.16; at 10 bp they trade 0.42–0.45 and net 1.48–1.57.
+    - Both hindsight choices are 10 bp with ridge 3e-4. The layer gets 2.26, above the paper's 2.19, while at K = 8 and 30 its best base was the reference setting.
+    - The validation choice (7.5 bp, 3e-4) is 0.13 below hindsight for the model and 0.18 for the layer. On 1996–1997 the 10 bp settings at ridge 1e-4 and 3e-4 tie with it: −0.14 [−0.67, +0.31] and −0.22 [−0.64, +0.24].
+    - One setting for K = 8, 30 and 100 on the block: hindsight keeps the reference setting with a band of 1.2e-3, and K = 100 then gets 2.09.
+    - From ridge 1e-4 to 1e-3 the model's net SR rises at every cost (5 bp: 0.77 / 0.95 / 1.16; 10 bp: 1.48 / 1.57 / 1.57), and so does its beta: 0.21–0.29 in 2014–2021 at 1e-3, against 0.07–0.11 at 1e-4.
+    - 2022–2025: the layer earns its costs (validation +0.25; the hindsight setting, held by walk-forward from 2019, +0.35). The models lose −0.11 to −0.03, the reference model −0.33.
 
 **Stage 3.** Each K at its own validation choice (the stage 1 table): 504 new models in 40 minutes. Net SR; *layer* = seed ensemble + band. The paper's figures are its model (seed average), so only the model column compares like with like.
 
