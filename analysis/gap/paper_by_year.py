@@ -10,7 +10,9 @@ day (fig2_digitize.py reads the vector paths: 5,880 days, 245 to a year), so by 
   digitizer filled them by interpolation, which smooths single days (1-day returns understate sigma); blocks whose
   ends are within a drawing tolerance do not. The check: the years pooled give Table 2's sigma;
 - net return needs the year's cost, which the paper does not give. Only the average is known: mu - mu_net in Table 2.
-  Two cases: the cost constant, or the cost moving by era as our D model's does (it falls as turnover falls).
+  Three cases: the cost constant; the cost moving by era as our D model's does (it falls as turnover falls); or the
+  cost proportional to each year's gross return, every year paying the same share of it (42.9% at K = 30). The final
+  deck uses the proportional case since 2026-11-16 (the user's decision); section 5 says what it requires of turnover.
 Ours: the D runs at K = 30 (buffered list, rebuilt history), each traded from cash at the paper's costs over all of
 each year's days: the reference model (seeds pooled), the best fixed model in hindsight (10 bp, ridge 3e-4) and the
 best fixed ensemble + band in hindsight (5 bp, ridge 1e-4, band 1.2e-3; SCAN_BUFFER_GRID.md). Hindsight settings
@@ -40,6 +42,31 @@ OUT = Path(__file__).with_name("PAPER_BY_YEAR.md")
 
 def sr(x: pd.Series) -> float:
     return float(x.mean() / x.std() * np.sqrt(252))
+
+
+def paper_after_costs(K: int = 30, how: str = "proportional", era_cost: dict[str, float] | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Figure 2's growth of one unit before costs (index 0: the start of 1998; 245 days a year) and the estimated path
+    after costs. Table 2 gives only the average cost (mu - mu_net), taken off as a cost per figure day (a year's % / 252,
+    as Table 2's annualization counts days), spread over the years in one of three ways:
+      constant      the same every day;
+      proportional  every year pays the same share of its own gross return: each day of year y pays share x the year's
+                    mean daily gross return, share = the average cost / the mean daily gross return (42.9% at K = 30);
+      ours          each era pays the average scaled as our reference model's cost moves (era_cost: era -> % a year).
+    All three take the same total cost; they differ in when it is paid."""
+    paper = np.r_[1.0, pd.read_csv(FIG2)[f"K={K}"].to_numpy()]
+    r = paper[1:] / paper[:-1] - 1
+    year = 1998 + np.arange(len(r)) // DAYS
+    avg = (PAPER_TABLE2[K][1] - PAPER_TABLE2[K][4]) / 100 / 252
+    if how == "constant":
+        cost = np.full(len(r), avg)
+    elif how == "proportional":
+        cost = avg / r.mean() * pd.Series(r).groupby(year).transform("mean").to_numpy()
+    elif how == "ours":
+        era = {y: e for e, (a, b) in ERAS.items() if e != "1998–2021" for y in range(a, b + 1)}
+        cost = avg * np.array([era_cost[era[y]] for y in year]) / era_cost["1998–2021"]
+    else:
+        raise ValueError(f"unknown cost path {how!r}")
+    return paper, np.r_[1.0, np.cumprod(1 + r - cost)]
 
 
 def paper_years(K: int) -> pd.DataFrame:
@@ -122,30 +149,37 @@ def main() -> None:
     for K in (8, 30, 100):
         t, p = paper[K], dict(zip(("SR", "mu", "sigma", "SR_net", "mu_net"), PAPER_TABLE2[K][:5]))
         avg = p["mu"] - p["mu_net"]
+        share = avg / t["mu"].mean()                                                     # the proportional path's share
         for e, (a, b) in ERAS.items():
             s = t.loc[a:b]
             mu, sig = s["mu"].mean(), np.sqrt(s["var"].mean())
             prof = avg * cost_era[e] / cost_era["1998–2021"]
             era_rows[(f"paper K = {K}", e)] = {"gross μ %": mu, "σ %": sig, "gross SR": mu / sig, "net SR, constant cost": (mu - avg) / sig,
-                                               "net SR, cost moving like ours": (mu - prof) / sig}
+                                               "net SR, cost moving like ours": (mu - prof) / sig,
+                                               "net SR, cost proportional to return": (1 - share) * mu / sig}
     for name, d in mine.items():
         for e, (a, b) in ERAS.items():
             x = d[(d.index.year >= a) & (d.index.year <= b)]
             era_rows[(f"ours: {name}", e)] = {"gross μ %": x.gross.mean() * 25200, "σ %": x.gross.std() * np.sqrt(252) * 100, "gross SR": sr(x.gross),
-                                              "net SR, constant cost": sr(x.net), "net SR, cost moving like ours": np.nan}
+                                              "net SR, constant cost": sr(x.net), "net SR, cost moving like ours": np.nan,
+                                              "net SR, cost proportional to return": np.nan}
     et = pd.DataFrame(era_rows).T
     et.index = [f"{a}, {b}" for a, b in et.index]
     et.index.name = "run, period"
     text += ["## 2. By era\n",
-             "For the paper, the net columns subtract its average cost (Table 2's μ − μ_net, 7.14% a year at K = 30), either constant or scaled by era "
-             f"as our reference model's cost moves ({', '.join(f'{e}: {v:.1f}%' for e, v in cost_era.items())} a year). "
-             "Ours are measured; for them both net columns would be the same, so only the first is filled.\n", md(et), ""]
+             "For the paper, the net columns subtract its average cost (Table 2's μ − μ_net, 7.14% a year at K = 30): constant, scaled by era "
+             f"as our reference model's cost moves ({', '.join(f'{e}: {v:.1f}%' for e, v in cost_era.items())} a year), or in proportion "
+             "to each year's gross return (every year pays the same share of it; the final deck's case). "
+             "Ours are measured; for them the three net columns would be the same, so only the first is filled.\n", md(et), ""]
 
     # 3. by year, K = 30
     t = paper[30]
     avg = PAPER_TABLE2[30][1] - PAPER_TABLE2[30][4]
+    share30 = avg / t["mu"].mean()
     yr = pd.DataFrame({"paper gross μ %": t["mu"], "paper σ %": t["sigma"], "paper gross SR": t["mu"] / t["sigma"],
-                       "paper net SR, constant cost": (t["mu"] - avg) / t["sigma"]})
+                       "paper net SR, constant cost": (t["mu"] - avg) / t["sigma"],
+                       "paper net SR, cost proportional to return": (1 - share30) * t["mu"] / t["sigma"],
+                       "paper cost proportional to return, % a year": share30 * t["mu"]})
     for name, short in zip(mine, ("ours, reference model", "ours, ensemble + band (hindsight)", "ours, model (hindsight)")):
         d = mine[name]
         yr[f"{short}: net SR"] = d["net"].groupby(d.index.year).apply(sr)
@@ -159,15 +193,50 @@ def main() -> None:
     # 4. reading
     p30 = {e: et.loc[f"paper K = 30, {e}"] for e in ERAS}
     o30 = {e: et.loc[f"ours: ensemble + band, hindsight (5 bp, ridge 1e-4, band 1.2e-3), {e}"] for e in ERAS}
+    era3 = ("1998–2005", "2006–2013", "2014–2021")
+    by = lambda d, col: " / ".join(num(d[e][col]) for e in era3)                         # noqa: E731
     text += ["## 4. What it shows\n",
-             f"- **The paper's 2.28 is a 1998–2006 result.** Its estimated net SR is {p30['1998–2005']['net SR, constant cost']:.2f} on 1998–2005, "
-             f"{p30['2006–2013']['net SR, constant cost']:.2f} on 2006–2013 and {num(p30['2014–2021']['net SR, constant cost'])} on 2014–2021 "
-             f"({num(p30['2014–2021']['net SR, cost moving like ours'])} if its cost fell as ours did).",
-             f"- **The whole gap to the paper is in 2001–2006.** Our edge broke in spring 2001 (EXTENSION.md); the paper's held to about 2006, at 14–19% gross a year "
-             "with 1–2% volatility. From 2007 on, our hindsight objects are level with the paper's estimated net or above it.",
+             "- **The paper's 2.28 leans on its early years.** Its estimated net SR on 1998–2005 / 2006–2013 / 2014–2021 is "
+             f"{by(p30, 'net SR, constant cost')} with a constant cost, {by(p30, 'net SR, cost moving like ours')} if its cost fell as ours did, "
+             f"and {by(p30, 'net SR, cost proportional to return')} with a cost proportional to each year's return (the final deck's case). "
+             f"Before costs, which needs no assumption: {by(p30, 'gross SR')}.",
+             "- **Where the gap to the paper sits depends on the cost path.** Before costs, our edge broke in spring 2001 (EXTENSION.md) while the "
+             "paper's held to about 2006, at 14–19% gross a year with 1–2% volatility. Against our best fixed ensemble + band in hindsight "
+             f"({by(o30, 'net SR, constant cost')}): with a constant cost the paper leads only in 1998–2005, and from 2007 on our hindsight objects "
+             "are level with it or above; with a cost proportional to return it leads only in 2006–2013.",
              f"- **Our best fixed ensemble + band matches the paper's 2.28 over 1998–2021 with less gross return** ({o30['1998–2021']['gross μ %']:.1f}% against "
              f"{p30['1998–2021']['gross μ %']:.1f}%), because it trades less and at lower σ. It is a deployment layer chosen in hindsight, not the paper's object.",
-             "- **Caveat.** The paper's yearly cost is unknown; the two cost cases bracket it only if its turnover moved the way ours did.\n"]
+             "- **Caveat.** The paper's yearly cost is unknown. The constant and proportional paths are the two ends: costs come from trading, "
+             "not from returns, so a proportional cost needs the paper's turnover to fall with its return (section 5).\n"]
+
+    # 5. the after-cost curve under each cost path (K = 30)
+    paths = {"constant": "the same cost every day", "ours": "cost moving like ours", "proportional": "cost proportional to each year's return"}
+    rows = {}
+    for how, label in paths.items():
+        v, net = paper_after_costs(30, how, cost_era)
+        r = v[1:] / v[:-1] - 1
+        cost = (1 + r) - net[1:] / net[:-1]                                                 # each figure day's cost
+        cyear = pd.Series(cost).groupby(1998 + np.arange(len(r)) // DAYS).mean() * 25200     # % a year, as Table 2 counts
+        k10, k14, peak = 12 * DAYS, 16 * DAYS, int(np.argmax(net))
+        rows[label] = {"start of 2010": net[k10], "peak": net[peak], "peak year": str(1998 + peak // DAYS), "end of 2021": net[-1],
+                       "change 2010–2021, %": 100 * (net[-1] / net[k10] - 1), "change 2014–2021, %": 100 * (net[-1] / net[k14] - 1),
+                       **{f"cost {e}, % a year": float(cyear.loc[a:b].mean()) for e, (a, b) in ERAS.items() if e != "1998–2021"},
+                       "lowest year's cost, % a year": float(cyear.min())}
+    pt = pd.DataFrame(rows).T
+    pt.index.name = "cost path"
+    short_fee = 0.0001 * 0.5 * 252 * 100                                                    # 1 bp a day on half the book, % a year
+    per_turnover = 0.0005 * 252 * 100                                                       # % a year per unit of daily turnover
+    prop = pt.loc[paths["proportional"]]
+    late, low = float(prop["cost 2014–2021, % a year"]), float(prop["lowest year's cost, % a year"])
+    implied = (avg - short_fee) / per_turnover
+    text += ["## 5. The paper's curve after costs, K = 30, under each cost path\n",
+             "Growth of one unit from the start of 1998, on Figure 2's 245 days a year (the curve `fig2_ours.py` draws). The three paths take the same "
+             "total cost, so they end at the same value; they differ in when it is paid. The final deck draws the proportional path (2026-11-16, the "
+             "user's decision).\n", md(pt), "",
+             f"What the proportional path requires: at 5 bp per unit traded and 1 bp per unit short, with half the book short (a short fee of "
+             f"{short_fee:.2f}% a year), its 2014–2021 cost of {late:.2f}% a year leaves a turnover of about {(late - short_fee) / per_turnover:.2f} "
+             f"a day, against {implied:.2f} implied by Table 2's average cost; its lowest year's cost, {low:.2f}% a year, is "
+             f"{'below' if low < short_fee else 'above'} the short fee alone.\n"]
     OUT.write_text("\n".join(text), encoding="utf-8")
     print(f"wrote {OUT}")
 

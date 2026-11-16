@@ -306,7 +306,7 @@ Figure 2 of the paper is \textbf{before costs}, though neither caption nor text 
 The paper reads it as ``a strong performance throughout the full sample''.
 \par\smallskip
 \includegraphics[width=\linewidth]{assets/fig2_K030.png}
-\claim{After costs, the paper's curve is about flat from 2010, close to ours.}
+\claim{After costs, the paper's 47.8 is 9.0 by 2021, close to ours.}
 \src{Paper: Figure 2 and Table 2, $K=30$; after costs, our estimate (next slide). Ours: $K=30$, seed ensemble with the no-trade band,
 on the dataset we use (see \emph{Choosing the top 500}), at the best fixed setting over 1998--2021: hindsight, which knows the future
 (see \emph{Without the band: hindsight and walk-forward}). Paper: 245 days a year; ours: every trading day.}
@@ -318,15 +318,18 @@ on the dataset we use (see \emph{Choosing the top 500}), at the best fixed setti
       the value of 1 invested at the start of 1998. Its daily returns average $16.65\%$ a year:
       Table 2's return \emph{before} costs.
 \item \textbf{The cost.} Table 2 gives only its average:
-      $\mu-\mu_{\rm net}=16.66\%-9.52\%=7.14\%$ a year.
-\item \textbf{Take it off evenly, every day,} and compound into the cumulative return after costs:
+      $\mu-\mu_{\rm net}=16.66\%-9.52\%=7.14\%$ a year, $43\%$ of the return before costs.
+\item \textbf{Take it off in proportion to each year's return,} and compound into the cumulative return after costs:
 \[
-V^{\rm net}_t=V^{\rm net}_{t-1}\Big(\frac{V_t}{V_{t-1}}-c\Big),
+V^{\rm net}_t=V^{\rm net}_{t-1}\Big(\frac{V_t}{V_{t-1}}-c_y\Big),
 \qquad
-c=\frac{7.14\%}{252}\approx2.8\ \text{bp a day}.
+c_y=0.43\,\bar r_y,
 \]
+      with $\bar r_y$ the average daily return of year $y$ before costs: every year keeps $57\%$ of its return.
 \end{enumerate}
 \claim{The paper's own average cost takes its cumulative return from 47.8 down to 9.0.}
+\src{Table 2 gives only the average cost, so how it is spread over the years is our assumption.
+In proportion to return, it is $13.6\%$ a year in 1998--2005 and $2.4\%$ in 2014--2021.}
 \end{frame}
 
 % ============================================================================
@@ -1246,10 +1249,10 @@ Turnover per day. $\delta=0.12\%$ was read off 1998--2021, so its rows are a dia
 Cumulative return after costs, $K=30$: the paper's estimate, and our seed ensembles with the no-trade band.
 \par\smallskip
 \includegraphics[width=\linewidth]{assets/net_K030.png}
-\claim{After costs, the paper's curve is flat from 2010, and ours catch up with it by 2021.}
-\src{Paper: Figure 2 less Table 2's average cost (see \emph{The paper's Figure 2, after costs}). Walk-forward and hindsight choose
-the training setting and the band width (see \emph{Adding a no-trade band}). Band added after and in the loss: the paper's settings
-with the band of $0.04\%$, chosen on 1996--1997 (see \emph{The no-trade rule in the loss}).}
+\claim{After costs, ours keep pace with the paper until 2004 and end close to it by 2021.}
+\src{Paper: Figure 2 less its average cost, in proportion to each year's return (see \emph{The paper's Figure 2, after costs}). Walk-forward and hindsight choose
+the setting and the band width (see \emph{Adding a no-trade band}). Band added after and in the loss: the paper's settings,
+band $0.04\%$ chosen on 1996--1997 (see \emph{The no-trade rule in the loss}).}
 \end{frame}
 
 \begin{frame}{Conclusions}
@@ -1268,9 +1271,9 @@ with the band of $0.04\%$, chosen on 1996--1997 (see \emph{The no-trade rule in 
 \end{itemize}
 \textbf{A critique of the paper}
 \begin{itemize}
-\item Its cumulative-return graph, Figure 2, leaves out transaction costs without saying so.
-      After the paper's own average cost it is flat from 2010, not ``strong throughout''.
-\item Scored after costs, as all our results are, our curves catch up with it by 2021.
+\item Its cumulative-return graph, Figure 2, leaves out transaction costs without saying so. After costs,
+      its 47.8 is 9.0, and its net Sharpe falls from $4.25$ in 1998--2005 to $0.86$ in 2014--2021.
+\item Scored after costs, as all our results are, ours end close to it: $8.6$ and $8.3$ against $9.0$ by 2021.
 \end{itemize}
 \end{frame}
 

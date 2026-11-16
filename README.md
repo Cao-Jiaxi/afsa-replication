@@ -4,6 +4,8 @@ Jiaxi Cao and Ander Ibarrondo. AMS 520 *Machine Learning in Quantitative Finance
 
 We replicate Epstein, Wang, Choi and Pelger, *Attention Factors for Statistical Arbitrage* (ICAIF '25): attention-based factors learned from 39 firm characteristics, a LongConv network trading the residuals, and all of it trained jointly on the net Sharpe ratio. The target is the Attention + LongConv rows of the paper's Table 2 (out of sample 1998–2021), and the extension is 2022–2025.
 
+Everything needed to reproduce our results is in this [Google Drive folder](https://drive.google.com/drive/folders/1ACrrd_qcRoTwAqAIdqOsisCD1Mk8zoPV?usp=sharing).
+
 ## Slides
 
 - [Phase I presentation](slides/Phase1/main.pdf), with its [source](slides/Phase1/) (report, speech text and speaker notes as LaTeX).
@@ -19,7 +21,7 @@ We replicate Epstein, Wang, Choi and Pelger, *Attention Factors for Statistical 
 - **Results** at K = 30, as net Sharpe ratios on 1998–2021 after the paper's costs (the paper: 2.28).
     - Before costs we are close to the paper (gross SR 3.7 against 3.97). After costs our model is well below it (1.31 on dataset D, defined in the table below), because it trades more.
     - Averaging the seeds' portfolio weights and adding a no-trade band lifts this to 2.09 when the training setting and the band width are chosen on 1996–1997, as the paper chooses its hyperparameters, and to 1.93 when they are re-chosen each January from the years before. It reaches the paper's 2.28 only with the setting and band that turn out best on 1998–2021 itself, which no one could have picked in advance ([SCAN_BUFFER_GRID.md](analysis/gap/SCAN_BUFFER_GRID.md)). These are deployment layers, not Table 2 rows.
-    - The gap to the paper is in 2001–2006. Rebuilt year by year from its Figure 2 (net of Table 2's average cost), the paper earned 14–19% a year before costs at 1–2% volatility until about 2006, while our edge broke in spring 2001. From 2007 on, our best result in hindsight is level with the paper's or above it ([PAPER_BY_YEAR.md](analysis/gap/PAPER_BY_YEAR.md)).
+    - Before costs, the gap to the paper is in 2001–2006. Rebuilt year by year from its Figure 2, the paper earned 14–19% a year at 1–2% volatility until about 2006, while our edge broke in spring 2001. After costs it depends on how the paper's cost was spread over the years, which the paper does not report: with the same cost every year the paper leads our best result in hindsight only in 1998–2005; with a cost proportional to each year's return, only in 2006–2013 ([PAPER_BY_YEAR.md](analysis/gap/PAPER_BY_YEAR.md)).
     - In 2022–2025 the model loses money after costs (−0.34). The ensemble with the band nets +0.13, but only thanks to the hedge's short positions in stocks too new to have a signal, three of which collapsed. With those positions set aside it nets −0.37, and none of the fixes we tried lifts it above zero ([EXTENSION.md](analysis/gap/EXTENSION.md)).
     - We tested designs from the course's reinforcement-learning lecture: a learned trading rule and two richer versions of it, attention across stocks, and pessimism where the seeds disagree. Each decision rule was written down before its test ran. All came out inconclusive or not kept except one: on fresh runs, the richest trading rule (SM) beat D's model with a band added after training on 1996–1997. SM is reported below as a deployment variant ([analysis/rl/](analysis/rl/)).
     - The main specification (training cost, ridge, universe, λ_Var) is still being settled.
@@ -59,7 +61,7 @@ It beats the fixed band on 1998–2021 at K = 30 and 100, mostly in 1998–2005,
 | `CLAUDE.md` | The project guide: data, model, every open decision with its reason, status, all results and open questions. It also serves as instructions for the coding assistant |
 | `NOTES.md` | Details behind the guide |
 
-**No data is included.** The data come from CRSP and Compustat under Stony Brook's WRDS licence. To reproduce the results you need your own WRDS access; the commands below rebuild everything from it.
+**No data is in this repository.** The data come from CRSP and Compustat under Stony Brook's WRDS licence. They are in the [Google Drive folder](https://drive.google.com/drive/folders/1ACrrd_qcRoTwAqAIdqOsisCD1Mk8zoPV?usp=sharing) above, with everything else needed to reproduce our results; please keep the link within the course. With your own WRDS access, the commands below also rebuild everything from scratch.
 
 ## Setup
 

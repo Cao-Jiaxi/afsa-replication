@@ -20,7 +20,9 @@ ratios stored in SCAN_BUFFER_GRID.md before it draws.
 
 The paper: its Figure 2 curve for K = 30 (fig2_digitize.py), growth of one unit before costs, 245 days a year. Its
 after-cost line is an estimate: the paper gives no daily cost, only the average in Table 2 (mu - mu_net, 7.14% a
-year at K = 30), which is taken off every day's return evenly (PAPER_BY_YEAR.md's "constant cost" case).
+year at K = 30). Since 2026-11-16 (the user's decision) it is spread over the years in proportion to each year's gross
+return, every year paying the same share of it, 42.9% (paper_by_year.paper_after_costs, "proportional"); until then it
+was taken off every day evenly. PAPER_BY_YEAR.md section 5 compares the cost paths: they end at the same value.
 
 The deck's figures (2026-11-16, the user's requests): fig2_K030.png shows the paper and ours by hindsight only;
 net_K030.png shows every curve after costs, with two more of ours from band_trained.py: the seed ensemble of D's
@@ -45,11 +47,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from fig2_digitize import OUT as FIG2  # noqa: E402
 from lookback import D_GRID, D_SET, OBJ, realized  # noqa: E402
+from paper_by_year import paper_after_costs  # noqa: E402
 from selection import HOLDOUT, TEST, Scan, parse_set, parse_setting  # noqa: E402
 
 from afsa.metrics import PAPER_TABLE2  # noqa: E402
 
 PAPER_DAYS = 245                                              # the figure's days a year (fig2_digitize.py)
+PAPER_COST = "proportional"                                   # how the paper's average cost is spread (paper_by_year.py)
 STORED = {"hindsight": (2.28, 0.13), "walk-forward": (1.93, 0.13)}   # SCAN_BUFFER_GRID.md, K = 30: 1998-2021, 2022-2025
 COLORS = {"hindsight": "tab:blue", "walk-forward": "tab:orange"}
 HERE = Path(__file__).parent
@@ -260,11 +264,11 @@ def main() -> None:
     last = args.last_year
 
     frames, plans = ours()
-    paper = np.r_[1.0, pd.read_csv(FIG2)["K=30"].to_numpy()]
+    paper, paper_net = paper_after_costs(30, PAPER_COST)
+    if not np.allclose(paper[1:], pd.read_csv(FIG2)["K=30"].to_numpy()):
+        raise ValueError("paper_after_costs must start from the digitized Figure 2 curve")
     xp = 1998 + np.arange(len(paper)) / PAPER_DAYS
     p_sr, p_mu, p_sr_net, p_mu_net = (PAPER_TABLE2[30][i] for i in (0, 1, 3, 4))
-    cost = (p_mu - p_mu_net) / 100 / 252                      # Table 2's average cost a day, as its annualization counts days
-    paper_net = np.r_[1.0, np.cumprod(1 + paper[1:] / paper[:-1] - 1 - cost)]
     if args.deck:
         deck(frames, xp, paper, paper_net)
         deck_net(frames, bands(), xp, paper_net)
@@ -310,7 +314,7 @@ def main() -> None:
              "× 9 band widths.\nHindsight: the best fixed candidate over 1998–2021 (5 bp, ridge 1e-4, 30 epochs, band 1.2e-3), kept through "
              f"{last}.\nWalk-forward: each January the best net SR over all earlier years (1998: the validation choice); "
              f"{len(set(wf.values()))} candidates, {switches} switches to {last}, each paid for.\nThe paper's after-cost line takes Table 2's "
-             f"average cost ({p_mu - p_mu_net:.2f}% a year) off every day evenly, since the paper gives no daily cost.\nThe paper's curves "
+             f"average cost ({p_mu - p_mu_net:.2f}% a year) in proportion to each year's gross return, since the paper gives no daily cost.\nThe paper's curves "
              f"have {PAPER_DAYS} days a year; ours have every trading day.",
              fontsize=6.5, color="0.25", va="bottom")
     fig.tight_layout(rect=(0, 0.1, 1, 1))
